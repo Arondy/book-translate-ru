@@ -25,19 +25,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+from common import process_dir
+from config import get_config  # Max epigraph length — loaded from config.toml [epigraphs] section
 
-
-from config import get_config
-
-
-def process_dir(temp_dir: Path) -> Path:
-    """Return process subdirectory (creates if needed)."""
-    p = temp_dir / "process"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-# Max epigraph length — loaded from config.toml [epigraphs] section
 EPIGRAPH_MAX_CHARS = get_config().get("epigraphs", "epigraph_max_chars", 600)
 
 # Patterns that look like a chapter heading

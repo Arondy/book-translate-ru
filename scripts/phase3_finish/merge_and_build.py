@@ -21,22 +21,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-
-
-def process_dir(temp_dir: Path) -> Path:
-    """Return process subdirectory (creates if needed)."""
-    p = temp_dir / "process"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-def run_cmd(cmd: list[str], desc: str = "") -> str:
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        sys.stderr.write(f"[merge_and_build] ERROR: {e}\n{e.stderr}\n")
-        raise
+from common import process_dir, run_cmd
 
 
 def strip_toc_sections(text: str) -> str:

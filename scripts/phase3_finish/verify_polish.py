@@ -30,16 +30,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+from common import process_dir  # Load config from config.toml [polish] section
 
-
-def process_dir(temp_dir: Path) -> Path:
-    """Return process subdirectory (creates if needed)."""
-    p = temp_dir / "process"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-# Load config from config.toml [polish] section
 try:
     from config import get_config
 

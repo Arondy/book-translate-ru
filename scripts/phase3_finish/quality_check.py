@@ -42,18 +42,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+from common import process_dir
+from config import get_config  # Tunables — loaded from config.toml [quality] section
 
-from config import get_config
-
-
-def process_dir(temp_dir: Path) -> Path:
-    """Return process subdirectory (creates if needed)."""
-    p = temp_dir / "process"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-# Tunables — loaded from config.toml [quality] section
 _cfg = get_config()
 EN_LEAK_CHARS = _cfg.get("quality", "en_leak_chars", 80)
 RATIO_MIN = _cfg.get("quality", "ratio_min", 0.6)

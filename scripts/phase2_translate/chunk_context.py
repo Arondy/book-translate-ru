@@ -18,19 +18,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+from common import process_dir
+from config import get_config  # Tunable: how many characters of each neighbour to inject.
 
-
-from config import get_config
-
-
-def process_dir(temp_dir: Path) -> Path:
-    """Return process subdirectory (creates if needed)."""
-    p = temp_dir / "process"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-# Tunable: how many characters of each neighbour to inject.
 # Loaded from config.toml [chunk_context] section.
 _cfg = get_config()
 CONTEXT_CHARS = _cfg.get("chunk_context", "context_chars", 300)

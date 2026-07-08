@@ -26,7 +26,7 @@ Usage:
     python3 fb2_builder.py input.md output.fb2 --title "Title" --author "Author"
 
 Requires: lxml (already in requirements.txt as part of beautifulsoup4 deps)
-"""  # noqa: E501
+"""
 
 import base64
 import datetime

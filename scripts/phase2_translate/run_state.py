@@ -36,21 +36,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+from common import process_dir  # ─────────────────────────────────────────────────────────────────────
 
-
-def process_dir(temp_dir: Path) -> Path:
-    """Return process subdirectory (creates if needed).
-
-    Layout:
-      <temp_dir>/             - human-facing (glossary.json, voice book, book.*, reports)
-      <temp_dir>/process/     - machine-facing (chunks, metas, manifests, configs)
-    """
-    p = temp_dir / "process"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-# ─────────────────────────────────────────────────────────────────────
 # Helpers — same hashing scheme as glossary.py
 # ─────────────────────────────────────────────────────────────────────
 

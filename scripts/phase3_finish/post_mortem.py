@@ -22,19 +22,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+from common import process_dir
+from config import get_config  # When total data is huge, aggregate per-chunk data into chapter-level stats
 
-
-from config import get_config
-
-
-def process_dir(temp_dir: Path) -> Path:
-    """Return process subdirectory (creates if needed)."""
-    p = temp_dir / "process"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-# When total data is huge, aggregate per-chunk data into chapter-level stats
 # Loaded from config.toml [post_mortem] section
 AGGREGATE_THRESHOLD = get_config().get("post_mortem", "aggregate_threshold", 80000)
 

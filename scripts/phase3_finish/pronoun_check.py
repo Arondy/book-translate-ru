@@ -24,19 +24,9 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
+from common import process_dir
+from config import get_config  # Snippet tunables — loaded from config.toml [pronoun_check] section
 
-
-from config import get_config
-
-
-def process_dir(temp_dir: Path) -> Path:
-    """Return process subdirectory (creates if needed)."""
-    p = temp_dir / "process"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
-
-# Snippet tunables — loaded from config.toml [pronoun_check] section
 _cfg = get_config()
 SNIPPET_CHARS = _cfg.get("pronoun_check", "snippet_chars", 800)
 SNIPPET_TRUNCATE = _cfg.get("pronoun_check", "snippet_truncate", 200)
