@@ -392,7 +392,7 @@ python3 {baseDir}/scripts/phase3_finish/merge_and_build.py --temp-dir "<temp_dir
 
 **Формат вывода — только FB2.** HTML и EPUB не генерируются: FB2 —
 целевой формат для русских читалок и библиотек. Если нужен другой
-формат — конвертируйте FB2 → EPUB/HTML/MOBI внешним Calibre после прогона.
+формат — конвертируйте FB2 → EPUB/HTML/MOBI внешним инструментом после прогона.
 
 Скрипт:
 1. Сливает `output_chunk*.md` → `output.md` (для отладки и пост-мортема).
