@@ -58,12 +58,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 
-
-def process_dir(temp_dir: Path) -> Path:
-    p = temp_dir / "process"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
+from common import process_dir
 
 # ─────────────────────────────────────────────────────────────────────
 # Footnote body extraction from XHTML
@@ -257,16 +252,12 @@ def find_epub_extract_dir(temp_dir: Path) -> Path | None:
     """Find the directory where EPUB was extracted.
 
     Looks in:
-      1. <temp_dir>/process/_epub_extracted/  (custom _build_input.py)
-      2. <temp_dir>/process/htmlz_extracted/  (convert.py)
+      1. <temp_dir>/process/_epub_extracted/  (convert.py and convert_per_file.py)
     """
     pdir = process_dir(temp_dir)
-    for candidate in (
-        pdir / "_epub_extracted",
-        pdir / "htmlz_extracted",
-    ):
-        if candidate.exists() and any(candidate.rglob("*.xhtml")) or any(candidate.rglob("*.html")):
-            return candidate
+    candidate = pdir / "_epub_extracted"
+    if candidate.exists() and (any(candidate.rglob("*.xhtml")) or any(candidate.rglob("*.html"))):
+        return candidate
     return None
 
 

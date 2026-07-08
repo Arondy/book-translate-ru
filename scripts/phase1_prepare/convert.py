@@ -2,7 +2,8 @@
 """Convert EPUB/FB2 -> Markdown chunks for book-translate-ru skill.
 
 Pipeline:
-  EPUB/PDF/DOCX -> Calibre -> HTMLZ -> HTML -> Pandoc -> Markdown
+  EPUB -> (zip extract + OPF spine merge) -> HTML -> Pandoc -> Markdown
+  FB2   -> Pandoc -> Markdown
   Markdown -> split by H1/H2 (chapter-aware) -> chunk by paragraphs
 
 Usage:
@@ -11,10 +12,9 @@ Usage:
     python3 convert.py <input_path> --no-chapter-split
     python3 convert.py <input_path> --force
 
-Requires: Calibre (ebook-convert), Pandoc, beautifulsoup4, lxml
+Requires: Pandoc, beautifulsoup4, lxml
 """
 
-import hashlib
 import json
 import re
 import shutil
@@ -28,23 +28,10 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-
+from common import process_dir, sha256_file
 
 # Load config from config.toml (searched in cwd, *_temp/, or skill dir)
 from config import get_config
-
-
-def process_dir(temp_dir: Path) -> Path:
-    """Return process subdirectory (creates if needed).
-
-    Layout:
-      <temp_dir>/             - human-facing (glossary.json, voice book, book.*, reports)
-      <temp_dir>/process/     - machine-facing (chunks, metas, manifests, configs)
-    """
-    p = temp_dir / "process"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
 
 # Chunk size targets. Loaded from config.toml [chunking] section.
 # 30000 chars ≈ 7500 tokens source + ~10000 tokens target = ~17500 tokens
@@ -54,11 +41,7 @@ _cfg = get_config()
 CHUNK_SIZE = _cfg.get("chunking", "chunk_size", 30000)
 SOFT_LIMIT = _cfg.get("chunking", "soft_limit", 40000)
 MIN_CHUNK = _cfg.get("chunking", "min_chunk", 200)
-CHAPTER_ONLY = _cfg.get("chunking", "chapter_only", False)
-
-
-def sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+CHAPTER_ONLY = _cfg.get("chunking", "chapter_only", True)
 
 
 def run_cmd(cmd: list[str], desc: str = "") -> str:
@@ -92,33 +75,93 @@ def run_post_step(script_path: Path, temp_dir: Path) -> None:
         sys.stderr.write(f"[convert] WARNING: {script_path.name} exited {result.returncode}\n{result.stderr}\n")
 
 
-def convert_to_htmlz(input_path: Path, work_dir: Path) -> Path:
-    stem = input_path.stem
-    htmlz_path = work_dir / f"{stem}.htmlz"
-    run_cmd(
-        ["ebook-convert", str(input_path), str(htmlz_path)],
-        f"ebook-convert {input_path.name} -> {htmlz_path.name}",
-    )
-    return htmlz_path
+def epub_to_markdown(epub_path: Path, work_dir: Path) -> Path:
+    """Convert EPUB -> Markdown without Calibre.
 
+    Steps:
+      1. Extract the EPUB (it's a zip) into `work_dir/_epub_extracted/`.
+         The directory is kept on disk so `extract_footnotes.py` can
+         scan XHTML files for footnote bodies in a later post-step.
+      2. Locate the OPF file and read its spine — the ordered list of
+         XHTML files that form the reading order.
+      3. Concatenate the `<body>` of each spine XHTML into one merged
+         HTML document, in reading order.
+      4. Run `pandoc html -> markdown` on the merged HTML and clean the
+         output with `_clean_markdown_output`.
 
-def extract_htmlz(htmlz_path: Path, work_dir: Path) -> Path:
-    extract_dir = work_dir / "htmlz_extracted"
+    Returns the path to the produced `input.md`.
+
+    Falls back to "largest XHTML in the archive" when no OPF spine is
+    found (rare for valid EPUBs, but defensive).
+    """
+    import zipfile
+
+    from bs4 import BeautifulSoup
+
+    extract_dir = work_dir / "_epub_extracted"
+    if extract_dir.exists():
+        shutil.rmtree(extract_dir)
     extract_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = work_dir / "htmlz_temp.zip"
-    shutil.copy2(htmlz_path, zip_path)
-    shutil.unpack_archive(str(zip_path), str(extract_dir))
-    zip_path.unlink()
 
-    html_files = sorted(extract_dir.rglob("*.html"))
-    if not html_files:
-        html_files = sorted(extract_dir.rglob("*.xhtml"))
-    if not html_files:
-        raise RuntimeError("No HTML files found in extracted HTMLZ")
+    with zipfile.ZipFile(epub_path) as zf:
+        zf.extractall(extract_dir)
 
-    # main_html = largest HTML file (book body)
-    main_html = max(html_files, key=lambda f: f.stat().st_size)
-    return main_html
+    opf_files = sorted(extract_dir.rglob("*.opf"))
+    if not opf_files:
+        raise RuntimeError(f"No OPF file found in extracted EPUB {epub_path}")
+    opf_path = opf_files[0]
+    opf = BeautifulSoup(opf_path.read_text(encoding="utf-8"), "lxml-xml")
+    spine_ids = [it.get("idref") for it in opf.find_all("itemref")]
+    manifest = {it.get("id"): it.get("href") for it in opf.find_all("item") if it.get("id") and it.get("href")}
+    opf_dir = opf_path.parent
+
+    html_parts: list[str] = []
+    for sid in spine_ids:
+        href = manifest.get(sid)
+        if not href:
+            continue
+        xhtml_path = (opf_dir / href).resolve()
+        if xhtml_path.suffix.lower() not in (".html", ".xhtml", ".htm"):
+            continue
+        if not xhtml_path.exists():
+            continue
+        try:
+            content = xhtml_path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        soup = BeautifulSoup(content, "lxml")
+        body = soup.find("body")
+        html_parts.append(str(body) if body else content)
+
+    if not html_parts:
+        # Defensive fallback: largest XHTML in the archive.
+        all_html = sorted(
+            extract_dir.rglob("*.xhtml"),
+            key=lambda f: f.stat().st_size,
+            reverse=True,
+        ) or sorted(
+            extract_dir.rglob("*.html"),
+            key=lambda f: f.stat().st_size,
+            reverse=True,
+        )
+        if not all_html:
+            raise RuntimeError(f"No XHTML content found in EPUB: {epub_path}")
+        content = all_html[0].read_text(encoding="utf-8", errors="replace")
+        soup = BeautifulSoup(content, "lxml")
+        body = soup.find("body")
+        html_parts.append(str(body) if body else content)
+
+    merged_html = (
+        "<!DOCTYPE html>\n<html><head><meta charset='utf-8'></head><body>\n"
+        + "\n".join(html_parts)
+        + "\n</body></html>"
+    )
+    merged_html_path = work_dir / "_merged.html"
+    merged_html_path.write_text(merged_html, encoding="utf-8")
+
+    md_path = work_dir / "input.md"
+    html_to_markdown(merged_html_path, md_path)
+    return md_path
 
 
 def html_to_markdown(html_path: Path, output_path: Path):
@@ -136,6 +179,102 @@ def html_to_markdown(html_path: Path, output_path: Path):
         ],
         f"pandoc {html_path.name} -> {output_path.name}",
     )
+    # Clean pandoc cruft from the output (div fences, attribute blocks,
+    # TOC sections, and a few defensive patterns inherited from older
+    # Calibre-based pipelines).
+    _clean_markdown_output(output_path)
+
+
+def _clean_markdown_output(md_path: Path):
+    """Clean pandoc cruft from Markdown produced by pandoc.
+
+    Removes:
+    - Pandoc div fences (::: {…})
+    - Pagebreak spans: [...]{#pg_N .pagebreak …}
+    - Link spans: [[text](#calibre_link-N){.calibre2}]
+    - Dropped caps: [X]{.minio}
+    - Pandoc attribute blocks: {#id .class}
+    - TOC sections (heading "Contents"/"Оглавление" + link entries)
+    - Title-page cruft before first real chapter heading
+
+    Most of the Calibre-specific patterns are no-ops on pandoc-only
+    output but are kept defensively — they cost nothing and tolerate
+    EPUBs that were re-exported through Calibre at some point.
+    """
+    import re as _re
+
+    text = md_path.read_text(encoding="utf-8")
+    lines = text.split("\n")
+    cleaned: list[str] = []
+
+    # State: skip TOC section
+    in_toc = False
+    toc_level = 0
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Skip pandoc div fences
+        if _re.match(r"^\s*:{3,4}\s*(\{[^}]*\})?\s*$", stripped):
+            continue
+
+        # Skip calibre pagebreak spans
+        if _re.search(r"\{#pg_\d+\s", stripped):
+            # Remove just the span, keep surrounding text
+            line = _re.sub(r"\[\]\{#pg_\d+[^}]*\}", "", line)
+            line = _re.sub(r"\{#pg_\d+[^}]*\}", "", line)
+            if not line.strip():
+                continue
+
+        # Skip dropped caps
+        line = _re.sub(r"\[([^\]])\]\{\.minio\}", r"\1", line)
+
+        # Clean calibre link spans: [[text](#calibre_link-N){.calibre2}] → text
+        line = _re.sub(
+            r"\[([^\]]+)\]\(#calibre_link[^)]*\)(?:\{[^}]*\})?",
+            r"\1",
+            line,
+        )
+        line = _re.sub(
+            r"\[\[([^\]]+)\]\(#calibre_link[^)]*\)(?:\{[^}]*\})?\]",
+            r"\1",
+            line,
+        )
+
+        # Remove remaining pandoc attribute blocks on heading lines
+        # but keep the heading text
+        if stripped.startswith("#"):
+            line = _re.sub(r"\s*\{#[^}]*\}\s*$", "", line)
+            line = _re.sub(r"\s*\{\.[^}]*\}\s*$", "", line)
+
+        # TOC detection: heading "Contents"/"Оглавление" + following link entries
+        heading_match = _re.match(r"^(#{1,6})\s+(.+?)\s*$", stripped)
+        if heading_match:
+            level = len(heading_match.group(1))
+            title = heading_match.group(2).lower()
+            if title in ("contents", "оглавление", "table of contents", "toc", "содержание"):
+                in_toc = True
+                toc_level = level
+                continue
+            elif in_toc and level <= toc_level:
+                in_toc = False
+
+        if in_toc:
+            # Skip TOC entries (lines that look like links to anchors)
+            if _re.search(r"\]\(#", stripped) or _re.match(r"^\s*[\d\-\*]\.?\s+\[", stripped):
+                continue
+
+        cleaned.append(line)
+
+    text = "\n".join(cleaned)
+
+    # Remove empty attribute-only lines left after cleanup
+    text = _re.sub(r"\n\{[^}]*\}\s*\n", "\n\n", text)
+
+    # Collapse multiple blank lines
+    text = _re.sub(r"\n{3,}", "\n\n", text)
+
+    md_path.write_text(text.strip() + "\n", encoding="utf-8")
 
 
 def fb2_to_markdown(fb2_path: Path, output_path: Path):
@@ -412,8 +551,8 @@ def extract_metadata_from_opf(epub_path: Path) -> dict:
     """Extract title/author from the EPUB OPF package metadata.
 
     EPUB title and author live in the OPF file (<dc:title>, <dc:creator>),
-    not in the per-HTML <meta> tags produced by Calibre conversion. Fall
-    back to HTML meta if the OPF cannot be read.
+    not in the per-XHTML <meta> tags. Returns empty strings if the OPF
+    cannot be read.
     """
     try:
         import zipfile
@@ -576,11 +715,9 @@ def main():
         sys.exit(1)
 
     # ── Pre-flight: required binaries ──────────────────────────────────
-    missing = [b for b in ("ebook-convert", "pandoc") if not shutil.which(b)]
-    if missing:
+    if not shutil.which("pandoc"):
         print(
-            f"ERROR: required binaries not found in PATH: {', '.join(missing)}.\n"
-            f"       Install Calibre (provides ebook-convert) and Pandoc.",
+            "ERROR: pandoc not found in PATH. Install Pandoc.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -599,7 +736,7 @@ def main():
     no_chapter_split = "--no-chapter-split" in sys.argv
     # --chapter-only flag overrides config.toml [chunking].chapter_only
     chapter_only_flag = "--chapter-only" in sys.argv
-    # Effective: flag overrides config; config default is False
+    # Effective: flag overrides config; config default is True
     chapter_only = chapter_only_flag or CHAPTER_ONLY
 
     if chapter_only and no_chapter_split:
@@ -653,20 +790,16 @@ def main():
         "chunks": {},
         "source_file": input_path.name,
         "chapter_split": not no_chapter_split,
+        "converter": "convert.py",
     }
 
-    if ext in (".epub", ".pdf", ".docx", ".doc", ".txt"):
-        sys.stderr.write(f"[convert] Converting {ext} -> HTMLZ\n")
-        htmlz_path = convert_to_htmlz(input_path, process_dir(temp_dir))
-        html_path = extract_htmlz(htmlz_path, process_dir(temp_dir))
-        md_path = process_dir(temp_dir) / "input.md"
-        html_to_markdown(html_path, md_path)
-        # Prefer OPF metadata (EPUB title/author live there, not in HTML
-        # <meta> tags). Fall back to HTML meta if OPF yields nothing.
+    if ext == ".epub":
+        sys.stderr.write("[convert] Converting EPUB -> Markdown (zip extract + pandoc)\n")
+        md_path = epub_to_markdown(input_path, process_dir(temp_dir))
+        # EPUB title/author live in the OPF package metadata, not in the
+        # per-XHTML <meta> tags produced by pandoc conversion.
         metadata = extract_metadata_from_opf(input_path)
-        if not metadata.get("original_title") and not metadata.get("author"):
-            metadata = extract_metadata_from_html(html_path)
-        source_format = ext.lstrip(".")
+        source_format = "epub"
 
     elif ext == ".fb2":
         md_path = process_dir(temp_dir) / "input.md"
@@ -675,7 +808,7 @@ def main():
         source_format = "fb2"
 
     else:
-        print(f"ERROR: Unsupported format: {ext}")
+        print(f"ERROR: Unsupported format: {ext}. Only .epub and .fb2 are supported.")
         sys.exit(1)
 
     chunk_paths, section_map = split_into_chunks(

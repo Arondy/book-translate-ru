@@ -2,18 +2,19 @@
 """Alternative EPUB → Markdown-чанки converter (per-file pandoc + cleanup).
 
 This is an ALTERNATIVE to `convert.py` for EPUBs where the standard
-Calibre→pandoc pipeline produces garbage Markdown (split headings,
-calibre link spans, pagebreak markers, dropped caps, raw HTML images).
+zip-merge → pandoc pipeline produces garbage Markdown (split headings,
+leftover span markup, pagebreak markers, dropped caps, raw HTML images).
 
 PROBLEM IT SOLVES (real case — Bastille Vs. the Evil Librarians):
-  convert.py does: ebook-convert EPUB → HTMLZ → pandoc HTML→Markdown.
-  For some EPUBs this produces:
-    - Headings split across two lines wrapped in calibre-link markup:
+  convert.py does: unzip EPUB → merge spine XHTML → pandoc HTML→Markdown.
+  For some EPUBs (especially those produced by older Calibre exports)
+  this produces:
+    - Headings split across two lines wrapped in link markup:
         # []{#pg_7 ...}[[Chapter]{.tfhabitatexpanded_bold_b_}](contents.xhtml#c_ch1){.calibre5} {#ch1 .cn}
         # [[1]{.tfhabitatexpanded_bold_b_}](#c_ch1){.calibre5}
     - Pagebreak spans: [...]{#pg_8 .calibre6 .pagebreak aria-label=" Page 8. "}
     - Dropped caps: [S]{.minio}
-    - Calibre link spans: [[Word]{.tfhabitatexpanded_bold_b_}](#calibre_link-X)
+    - Link spans: [[Word]{.tfhabitatexpanded_bold_b_}](#calibre_link-X)
     - Images as raw HTML: <figure><img src="../images/..."></figure>
       (fb2_builder.py expects Markdown ![alt](path))
 
@@ -21,12 +22,12 @@ WHAT THIS SCRIPT DOES:
   1. Extract EPUB as a zip.
   2. Read OPF spine → process XHTML files in reading order.
   3. For each XHTML file: run `pandoc html→markdown --wrap=none` SEPARATELY
-     (not on a merged HTMLZ) — preserves chapter structure.
+     (not on a merged HTML) — preserves chapter structure.
   4. Clean each Markdown output:
      - Headings FIRST (while `tfhabitatexpanded_bold_b_` markers still
        present): collapse split headings into a single `# Chapter N`,
        using the file basename as the title.
-     - Remove pagebreak spans, dropped caps, calibre link spans,
+     - Remove pagebreak spans, dropped caps, leftover link spans,
        pandoc attribute blocks `{...}`, div fences `:::`.
      - Convert `<figure><img>` and `<img>` → `![image](images/<name>)`.
      - Remove blank line right after `#` heading (so it doesn't split
@@ -40,10 +41,10 @@ WHAT THIS SCRIPT DOES:
 WHEN TO USE THIS INSTEAD OF convert.py:
   - convert.py produces many tiny chunks (< 200 chars) that are just
     heading fragments.
-  - chunk_sections.json contains calibre-link markup instead of real
+  - chunk_sections.json contains link markup instead of real
     chapter names.
   - Images appear as raw HTML in input.md instead of Markdown.
-  - Many calibre/pandoc attribute spans in the text.
+  - Many pandoc attribute spans in the text.
 
 USAGE:
     python3 convert_per_file.py <path_to_epub> [--temp-root <dir>] [--force]
@@ -83,12 +84,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "shared"))
 sys.path.insert(0, str(_HERE))
 
-
-def process_dir(temp_dir: Path) -> Path:
-    p = temp_dir / "process"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
-
+from common import process_dir
 
 # ─────────────────────────────────────────────────────────────────────
 # Default exclude set (publisher front/back matter)
@@ -161,7 +157,7 @@ def derive_title_from_basename(basename: str) -> str:
 
 
 def clean_md(text: str, clean_title: str | None) -> str:
-    """Clean pandoc-emitted Markdown from calibre/pandoc cruft.
+    """Clean pandoc-emitted Markdown from leftover cruft.
 
     Operations performed in this specific order (order matters —
     heading pass must run FIRST, while `tfhabitatexpanded_bold_b_`
@@ -191,7 +187,7 @@ def clean_md(text: str, clean_title: str | None) -> str:
     # --- 3. Dropped caps [X]{.minio} → X ---
     text = re.sub(r"\[([^\]])\]\{\.minio\}", r"\1", text)
 
-    # --- 4. Calibre link spans [text](#calibre_link..){.calibre2} → text ---
+    # --- 4. Link spans [text](#calibre_link..){.calibre2} → text ---
     # Also catch the variant WITHOUT the {.calibre2} attribute (pandoc may
     # not always emit it). Pattern: [text](#calibre_link-N) optionally
     # followed by {…} attribute block.
@@ -216,7 +212,7 @@ def clean_md(text: str, clean_title: str | None) -> str:
     text = re.sub(r"(?m)^\s*:{3,4}\s*(\{[^}]*\})?\s*$", "", text)
 
     # --- 7. Images: normalize paths to images/<name> ---
-    # Several formats pandoc/calibre may emit:
+    # Several formats pandoc may emit:
     #   a) <figure><img src="../images/foo.png"></figure>  → Markdown ![alt](../images/foo.png)
     #   b) <img src="../images/foo.png">                   → Markdown ![alt](../images/foo.png)
     #   c) Already-Markdown ![alt](../images/foo.png) — normalize path
