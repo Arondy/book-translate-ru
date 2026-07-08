@@ -25,15 +25,11 @@ Commands:
                            glossary to a new book in the series.
 
     find-duplicates        Scan glossary.json for near-duplicate terms that
-                           merge_meta's exact-match dedup missed. Reports:
-                           - Case-insensitive duplicates (same source, diff case)
-                           - Singular/plural pairs (Lens vs Lenses)
-                           - Apostrophe-s variants (Tracker vs Tracker's)
-                           - Substring matches (Janci is a token-subset of
-                             Janci Patterson)
-                           - Short-name/long-name pairs (Sing vs Sing Sing,
-                             Attica vs Attica Smedry) — common cause of
-                             duplicate character translations
+                           merge_meta's exact-match dedup missed.
+
+    inspect-manifest       Print a human-readable summary of manifest.json:
+                           chunk IDs, section titles, sizes, levels. Use this
+                           instead of ad-hoc python3 -c to inspect manifest.
 
                            Non-destructive — only REPORTS, does not merge.
                            Use after step 6 (merge) to catch terms that
@@ -53,21 +49,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-
-
+from common import process_dir
 from config import get_config
-
-
-def process_dir(temp_dir: Path) -> Path:
-    """Return process subdirectory (creates if needed).
-
-    Layout:
-      <temp_dir>/             - human-facing (glossary.json, voice book, book.*, reports)
-      <temp_dir>/process/     - machine-facing (chunks, metas, manifests, configs)
-    """
-    p = temp_dir / "process"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
 
 
 def stable_hash(obj) -> str:
@@ -620,6 +603,41 @@ def find_duplicates(temp_dir: Path) -> None:
     print("  (copy to <temp_dir>/process/_edit_glossary.py, edit, run).")
 
 
+def _inspect_manifest(temp_dir: Path) -> None:
+    """Print a human-readable summary of manifest.json.
+
+    Shows each chunk: ID, section_title, size, section_level.
+    Use this instead of ad-hoc python3 -c to inspect manifest structure.
+    """
+    manifest_path = process_dir(temp_dir) / "manifest.json"
+    if not manifest_path.exists():
+        print(f"ERROR: manifest.json not found at {manifest_path}", file=sys.stderr)
+        sys.exit(1)
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    chunks = manifest.get("chunks", {})
+
+    print(f"Manifest: {manifest_path}")
+    print(f"  version: {manifest.get('version', '?')}")
+    print(f"  source_file: {manifest.get('source_file', '?')}")
+    print(f"  chapter_split: {manifest.get('chapter_split', '?')}")
+    print(f"  converter: {manifest.get('converter', '?')}")
+    print(f"  total chunks: {len(chunks)}")
+    print()
+    print(f"{'chunk_id':<12} {'level':<6} {'size':>8}  {'section_title'}")
+    print(f"{'─' * 12} {'─' * 6} {'─' * 8}  {'─' * 40}")
+    for cid, info in chunks.items():
+        level = info.get("section_level", "?")
+        size = info.get("size", "?")
+        title = info.get("section_title", "?")
+        print(f"{cid:<12} {level:<6} {size:>8}  {title}")
+
+    sizes = [info.get("size", 0) for info in chunks.values()]
+    if sizes:
+        print()
+        print(f"  size stats: min={min(sizes)}, max={max(sizes)}, avg={sum(sizes) // len(sizes)}")
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print(__doc__)
@@ -658,6 +676,12 @@ if __name__ == "__main__":
             print("Usage: glossary.py find-duplicates <temp_dir>")
             sys.exit(1)
         find_duplicates(Path(sys.argv[2]))
+
+    elif command == "inspect-manifest":
+        if len(sys.argv) < 3:
+            print("Usage: glossary.py inspect-manifest <temp_dir>")
+            sys.exit(1)
+        _inspect_manifest(Path(sys.argv[2]))
 
     else:
         print(f"Unknown command: {command}", file=sys.stderr)
