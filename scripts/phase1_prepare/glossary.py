@@ -4,13 +4,25 @@
 Usage:
     python3 glossary.py count-frequencies <temp_dir>
     python3 glossary.py print-terms-for-chunk <temp_dir> <chunk_file>
+    python3 glossary.py validate-glossary <temp_dir> [--fix]
     python3 glossary.py validate-manifest <temp_dir>
     python3 glossary.py reset-run-state <temp_dir> [--prune-zero-freq]
     python3 glossary.py find-duplicates <temp_dir>
+    python3 glossary.py inspect-manifest <temp_dir>
 
 Commands:
     count-frequencies      Recompute term frequencies from chunks.
     print-terms-for-chunk  Print the per-chunk term table for a chunk.
+    validate-glossary      Schema gate for glossary.json: valid JSON,
+                           top-level "version": 2, non-empty `terms`,
+                           required per-term fields, unique ids/sources.
+                           RUN THIS after ANY write to glossary.json
+                           (especially a write done by a sub-agent) and
+                           BEFORE count-frequencies. With --fix it repairs
+                           what can be repaired deterministically (missing
+                           `version`, missing/duplicate `id`, missing
+                           optional fields) and saves the file back.
+
     validate-manifest      Check that all chunks have matching outputs.
     reset-run-state        Strip stale per-run metadata (applied_meta_hashes,
                            evidence_refs, notes) from glossary.json. USE THIS
@@ -35,6 +47,12 @@ Commands:
                            Use after step 6 (merge) to catch terms that
                            sub-agents added as "new" but which are actually
                            variants of existing glossary entries.
+
+Data-loss safety (see references/meta-json-schema.md, "Схема glossary.json"):
+    glossary.json is a human-facing file. This script NEVER silently
+    replaces a broken/unknown-schema glossary with an empty default and
+    NEVER writes an empty term list over a non-empty one — it fails loudly
+    instead, so a bad write by a sub-agent cannot destroy collected terms.
 """
 
 import hashlib
@@ -49,7 +67,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import process_dir
+from common import ensure_term_ids, make_term_id, process_dir
 from config import get_config
 
 
@@ -87,6 +105,7 @@ def surface_in_text(surface: str, text: str) -> bool:
 
 
 GLOSSARY_FILE = "glossary.json"  # lives in temp_dir root (human-facing)
+GLOSSARY_VERSION = 2  # top-level "version" — MANDATORY, see load_glossary()
 MANIFEST_FILE = "manifest.json"  # lives in process/
 
 # Quality thresholds — loaded from config.toml [quality] section
@@ -96,60 +115,264 @@ RATIO_MAX = _cfg.get("quality", "ratio_max", 2.0)
 EN_LEAK_CHARS = _cfg.get("quality", "en_leak_chars", 80)
 
 
-def load_glossary(temp_dir: Path) -> dict:
-    path = temp_dir / GLOSSARY_FILE
-    if not path.exists():
-        # Default high_frequency_top_n from config.toml [glossary] section
-        _top_n = get_config().get("glossary", "high_frequency_top_n", 20)
-        return {
-            "version": 2,
-            "terms": [],
-            "high_frequency_top_n": _top_n,
-            "applied_meta_hashes": {},
-        }
-    from config import read_json_safe
+class GlossaryError(Exception):
+    """Fatal problem with glossary.json — never swallowed, never auto-healed.
 
-    try:
-        data = read_json_safe(path)
-    except (json.JSONDecodeError, OSError):
-        _top_n = get_config().get("glossary", "high_frequency_top_n", 20)
-        return {
-            "version": 2,
-            "terms": [],
-            "high_frequency_top_n": _top_n,
-            "applied_meta_hashes": {},
-        }
-    if data.get("version") == 2:
-        return data
-    _top_n = get_config().get("glossary", "high_frequency_top_n", 20)
+    Raised instead of returning an empty default glossary: an empty default
+    would be silently written back over a real (non-empty) glossary by the
+    next save, destroying collected terms.
+    """
+
+
+def _default_glossary() -> dict:
+    """Fresh empty glossary — ONLY for the case 'file does not exist yet'."""
     return {
-        "version": 2,
+        "version": GLOSSARY_VERSION,
         "terms": [],
-        "high_frequency_top_n": _top_n,
+        "high_frequency_top_n": get_config().get("glossary", "high_frequency_top_n", 20),
         "applied_meta_hashes": {},
     }
 
 
-def save_glossary(temp_dir: Path, glossary: dict):
-    """Save glossary.json using Windows-safe atomic write."""
+def disk_terms_count(temp_dir: Path) -> int | None:
+    """How many terms are physically on disk right now.
+
+    Returns None when the file is missing or unreadable/unparsable.
+    Deliberately schema-agnostic: it must see terms even in a file that
+    load_glossary() would reject (that is the whole point of the guard).
+    """
+    path = temp_dir / GLOSSARY_FILE
+    if not path.exists():
+        return None
+    try:
+        from config import read_json_safe
+
+        data = read_json_safe(path)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    terms = data.get("terms")
+    if not isinstance(terms, list):
+        return None
+    return len(terms)
+
+
+def load_glossary(temp_dir: Path) -> dict:
+    """Load glossary.json strictly.
+
+    - file missing            -> fresh empty glossary (the only empty case)
+    - unreadable/invalid JSON -> GlossaryError
+    - missing "version": 2 but `terms` present -> migrated to v2 (warning)
+    - anything else           -> GlossaryError
+
+    NEVER returns an empty default for an existing file.
+    """
+    path = temp_dir / GLOSSARY_FILE
+    if not path.exists():
+        return _default_glossary()
+
+    from config import read_json_safe
+
+    try:
+        data = read_json_safe(path)
+    except (json.JSONDecodeError, OSError, ValueError) as e:
+        raise GlossaryError(
+            f"{path} существует, но не читается как JSON: {e}\n"
+            f"  Почини файл вручную (json.loads + json.dumps, см. "
+            f"scripts/shared/edit_glossary_template.py) и повтори команду.\n"
+            f"  Пустой глоссарий вместо него НЕ подставляется — иначе следующая "
+            f"запись затрёт собранные термины."
+        ) from e
+
+    if not isinstance(data, dict):
+        raise GlossaryError(f"{path}: top-level JSON должен быть объектом, а не {type(data).__name__}.")
+
+    terms = data.get("terms")
+    version = data.get("version")
+
+    if version != GLOSSARY_VERSION:
+        if isinstance(terms, list):
+            # Migrate: the payload looks like a v2 glossary, the key is just missing.
+            print(
+                f"WARN: {path}: отсутствует или неверен top-level \"version\" "
+                f"(got {version!r}); файл содержит {len(terms)} терминов — "
+                f"мигрирую как version={GLOSSARY_VERSION}.",
+                file=sys.stderr,
+            )
+            data["version"] = GLOSSARY_VERSION
+        else:
+            raise GlossaryError(
+                f"{path}: нет top-level \"version\": {GLOSSARY_VERSION} и нет массива \"terms\".\n"
+                f"  Это не глоссарий v2. Проверь файл: возможно, его перезаписал "
+                f"субагент без обязательного ключа \"version\".\n"
+                f"  Схема — references/meta-json-schema.md, раздел «Схема glossary.json (v2)».\n"
+                f"  Валидация: python3 glossary.py validate-glossary \"<temp_dir>\""
+            )
+
+    if not isinstance(data.get("terms"), list):
+        raise GlossaryError(
+            f"{path}: \"terms\" отсутствует или не является массивом.\n"
+            f"  Пустой глоссарий не подставляется. Проверь файл вручную."
+        )
+
+    data.setdefault("high_frequency_top_n", get_config().get("glossary", "high_frequency_top_n", 20))
+    data.setdefault("applied_meta_hashes", {})
+
+    # ids are derived, not hand-written: fill in whatever is missing
+    ensure_term_ids(data["terms"])
+
+    return data
+
+
+def save_glossary(temp_dir: Path, glossary: dict, *, allow_empty: bool = False):
+    """Save glossary.json using Windows-safe atomic write.
+
+    Guards against the two destructive writes that already cost us a
+    glossary once:
+      1. writing a payload without "version": 2 (would be unreadable and
+         then silently replaced by an empty default);
+      2. writing an EMPTY term list over a non-empty file on disk.
+    """
+    if not isinstance(glossary, dict) or not isinstance(glossary.get("terms"), list):
+        raise GlossaryError("save_glossary: payload не является глоссарием (нет массива \"terms\").")
+
+    glossary["version"] = GLOSSARY_VERSION
+    ensure_term_ids(glossary["terms"])
+
+    if not glossary["terms"] and not allow_empty:
+        on_disk = disk_terms_count(temp_dir)
+        if on_disk:
+            raise GlossaryError(
+                f"ОТКАЗ ОТ ЗАПИСИ: в памяти 0 терминов, а на диске их {on_disk}.\n"
+                f"  Похоже на проблему со схемой (обычно — отсутствует top-level "
+                f"\"version\": {GLOSSARY_VERSION} в glossary.json).\n"
+                f"  Проверь файл: python3 glossary.py validate-glossary \"{temp_dir}\"\n"
+                f"  glossary.json НЕ изменён."
+            )
+
     from config import atomic_write_json
 
     path = temp_dir / GLOSSARY_FILE
     atomic_write_json(path, glossary, indent=2, ensure_ascii=False)
 
 
+def confirm_terms(
+    temp_dir: Path,
+    *,
+    all_terms: bool = False,
+    term_ids: list[str] | None = None,
+    sources: list[str] | None = None,
+    note: str | None = None,
+    force: bool = False,
+) -> int:
+    """Raise term confidence from low/medium to high on user confirmation.
+
+    Canonical, scripted replacement for hand-editing `confidence`/`notes` in
+    glossary.json. Agents add new terms with `confidence: "low"` (see
+    merge_meta.py); this turns user feedback ("ОК, подтверди") into a safe
+    write that bumps the selected terms to `"high"` and records a note.
+
+    Selection (one or more):
+      - all_terms=True                                   -> every term
+      - term_ids=[...]                                   -> match term id (case-insensitive)
+      - sources=[...]                                    -> match term source/alias (case-insensitive)
+      - force=True                                        -> also re-confirm terms already "high"
+
+    Terms already at `"high"` (and not --force) are skipped. Saves via
+    save_glossary (atomic + schema-guarded). Returns the number changed.
+
+    Never silently no-ops a bad selector: if nothing matches, it prints a
+    hint and returns 0 without writing.
+    """
+    glossary = load_glossary(temp_dir)
+    terms = glossary["terms"]
+
+    selected: set[int] = set()
+    if all_terms:
+        selected = set(range(len(terms)))
+    else:
+        if term_ids:
+            idset = {t.lower() for t in term_ids}
+            for i, t in enumerate(terms):
+                if str(t.get("id", "")).lower() in idset:
+                    selected.add(i)
+        if sources:
+            srcset = {s.lower() for s in sources}
+            for i, t in enumerate(terms):
+                surfaces = {str(t.get("source", "")).lower()} | {str(a).lower() for a in (t.get("aliases") or [])}
+                if surfaces & srcset:
+                    selected.add(i)
+
+    if not selected:
+        print(
+            "confirm-terms: ни один термин не выбран — проверь --id/--source "
+            "или используй --all. glossary.json НЕ изменён.",
+            file=sys.stderr,
+        )
+        return 0
+
+    base_note = note or "confirmed by user"
+    changed_idx: list[int] = []
+    for i in sorted(selected):
+        t = terms[i]
+        cur = str(t.get("confidence", "low"))
+        if not force and cur == "high":
+            continue
+        t["confidence"] = "high"
+        existing = t.get("notes")
+        if existing:
+            if base_note not in str(existing):
+                t["notes"] = f"{existing}; {base_note}"
+        else:
+            t["notes"] = base_note
+        changed_idx.append(i)
+
+    if not changed_idx:
+        print(
+            "confirm-terms: выбранные термины уже имеют confidence=\"high\" — "
+            "ничего не изменено (используй --force для повторного подтверждения)."
+        )
+        return 0
+
+    save_glossary(temp_dir, glossary)
+    print(f"confirm-terms: подтверждено (confidence -> high) для {len(changed_idx)} термин(ов):")
+    for i in changed_idx:
+        t = terms[i]
+        print(f"  • {t.get('source')!r} -> {t.get('target')!r}  (id={t.get('id')!r})")
+    print(f'  Проверь: python3 glossary.py validate-glossary "{temp_dir}"')
+    return len(changed_idx)
+
+
 def term_surface_forms(term: dict) -> list[str]:
-    forms = [term["source"].lower()]
-    for alias in term.get("aliases", []):
-        forms.append(alias.lower())
-    return forms
+    forms = [str(term.get("source", "")).lower()]
+    for alias in term.get("aliases", []) or []:
+        forms.append(str(alias).lower())
+    return [f for f in forms if f]
 
 
 def count_frequencies(temp_dir: Path):
-    glossary = load_glossary(temp_dir)
-    chunks = sorted(process_dir(temp_dir).glob("chunk*.md"))
+    # Snapshot the disk state BEFORE loading — this is the guard against
+    # overwriting a real glossary with the result of a bad/partial read.
+    on_disk = disk_terms_count(temp_dir)
 
-    for term in glossary["terms"]:
+    glossary = load_glossary(temp_dir)
+    terms = glossary["terms"]
+
+    if not terms and on_disk:
+        raise GlossaryError(
+            f"ABORT: загружено 0 терминов, а в {temp_dir / GLOSSARY_FILE} их {on_disk}.\n"
+            f"  Похоже на проблему со схемой (чаще всего — отсутствует top-level "
+            f"\"version\": {GLOSSARY_VERSION}).\n"
+            f"  Проверь glossary.json: python3 glossary.py validate-glossary \"{temp_dir}\"\n"
+            f"  Частоты НЕ пересчитаны, glossary.json НЕ изменён."
+        )
+
+    chunks = sorted(process_dir(temp_dir).glob("chunk*.md"))
+    if not chunks:
+        print(f"WARN: в {process_dir(temp_dir)} нет chunk*.md — все частоты будут 0.", file=sys.stderr)
+
+    for term in terms:
         term["frequency"] = 0
         surfaces = term_surface_forms(term)
         for chunk_path in chunks:
@@ -159,10 +382,19 @@ def count_frequencies(temp_dir: Path):
                     term["frequency"] += 1
                     break
 
-    save_glossary(temp_dir, glossary)
-    print(f"Frequencies updated: {len(glossary['terms'])} terms")
-    for t in glossary["terms"]:
+    save_glossary(temp_dir, glossary, allow_empty=not on_disk)
+    print(f"Frequencies updated: {len(terms)} terms")
+    for t in terms:
         print(f"  {t['source']}: {t['frequency']}")
+
+    zero_freq = [t["source"] for t in terms if t.get("frequency", 0) == 0]
+    if zero_freq:
+        print()
+        print(f"WARN: {len(zero_freq)} терм(ов) не встречаются в книге ни разу: " + ", ".join(zero_freq[:20]))
+        if len(zero_freq) > 20:
+            print(f"      ... и ещё {len(zero_freq) - 20}")
+        print("      Обычно это одноразовые имена (благодарности, вступление) или")
+        print("      остатки series-wide глоссария. Проверь и удали лишние.")
 
 
 def print_terms_for_chunk(temp_dir: Path, chunk_file: str):
@@ -191,12 +423,12 @@ def print_terms_for_chunk(temp_dir: Path, chunk_file: str):
         is_high_freq = idx < top_n
 
         if appears_in_chunk or is_high_freq:
-            aliases_str = ", ".join(term.get("aliases", []))
+            aliases_str = ", ".join(term.get("aliases", []) or [])
             chunk_terms.append(
                 {
-                    "source": term["source"],
+                    "source": term.get("source", ""),
                     "alias": aliases_str,
-                    "target": term["target"],
+                    "target": term.get("target", ""),
                 }
             )
 
@@ -349,6 +581,225 @@ def validate_manifest(temp_dir: Path):
         print(f"VALIDATION OK: {total} chunks, all outputs present and valid")
 
 
+# ─────────────────────────────────────────────────────────────────────
+# validate-glossary — schema gate for glossary.json
+# ─────────────────────────────────────────────────────────────────────
+
+VALID_CATEGORIES = {"person", "place", "org", "term", "other"}
+VALID_GENDERS = {"male", "female", "neutral", "unknown"}
+VALID_CONFIDENCE = {"high", "medium", "low"}
+REQUIRED_TERM_FIELDS = ("id", "source", "target")
+OPTIONAL_TERM_DEFAULTS = {
+    "aliases": list,
+    "category": lambda: "other",
+    "gender": lambda: "unknown",
+    "confidence": lambda: "low",
+    "frequency": lambda: 0,
+}
+
+
+def validate_glossary(temp_dir: Path, fix: bool = False) -> None:
+    """Validate glossary.json against the v2 schema. Exit non-zero on errors.
+
+    This is the gate that must run after ANY write to glossary.json —
+    especially a write performed by a sub-agent, whose self-report
+    ("78 terms written and verified") is not evidence.
+
+    Checks (errors — block the pipeline):
+      - file exists, is valid JSON, top-level object
+      - top-level "version": 2                       (--fix: added)
+      - "terms" is a non-empty array
+      - each term has non-empty `source` and `target`
+      - each term has an `id`                        (--fix: derived from source)
+      - ids are unique                               (--fix: re-derived)
+      - sources are unique (case-insensitive)
+
+    Checks (warnings — reported, do not block):
+      - unknown category / gender / confidence values
+      - missing optional fields                      (--fix: filled with defaults)
+      - frequency == 0 (term never occurs in the book)
+      - frequency == 1 (likely one-off: acknowledgements, author's intro)
+      - an alias duplicating another term's source
+    """
+    path = temp_dir / GLOSSARY_FILE
+    if not path.exists():
+        print(f"ERROR: glossary.json not found at {path}", file=sys.stderr)
+        sys.exit(1)
+
+    from config import read_json_safe
+
+    try:
+        data = read_json_safe(path)
+    except (json.JSONDecodeError, OSError, ValueError) as e:
+        print(f"VALIDATION FAILED: {path} is not valid JSON: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    fixes: list[str] = []
+
+    if not isinstance(data, dict):
+        print(f"VALIDATION FAILED: top-level JSON must be an object, got {type(data).__name__}", file=sys.stderr)
+        sys.exit(1)
+
+    # ── top-level ────────────────────────────────────────────────────
+    if data.get("version") != GLOSSARY_VERSION:
+        msg = f'top-level "version" must be {GLOSSARY_VERSION} (got {data.get("version")!r})'
+        if fix and isinstance(data.get("terms"), list):
+            data["version"] = GLOSSARY_VERSION
+            fixes.append(f'set "version": {GLOSSARY_VERSION}')
+        else:
+            errors.append(msg + " — without it load_glossary() refuses to read the file")
+
+    terms = data.get("terms")
+    if not isinstance(terms, list):
+        errors.append('"terms" is missing or is not an array')
+        terms = []
+    elif not terms:
+        errors.append('"terms" is empty — a glossary with zero terms is almost always a bad write')
+
+    if "high_frequency_top_n" not in data:
+        if fix:
+            data["high_frequency_top_n"] = get_config().get("glossary", "high_frequency_top_n", 20)
+            fixes.append('added "high_frequency_top_n"')
+        else:
+            warnings.append('"high_frequency_top_n" missing (defaults to config value)')
+
+    if "applied_meta_hashes" not in data:
+        if fix:
+            data["applied_meta_hashes"] = {}
+            fixes.append('added "applied_meta_hashes"')
+        else:
+            warnings.append('"applied_meta_hashes" missing (will be created on first merge)')
+
+    # ── per-term ─────────────────────────────────────────────────────
+    seen_ids: dict[str, int] = {}
+    seen_sources: dict[str, int] = {}
+    all_sources = {str(t.get("source", "")).lower() for t in terms if isinstance(t, dict)}
+    # One-off detection only makes sense on a real book, not on a 1-chunk test
+    chunk_count = len(list(process_dir(temp_dir).glob("chunk*.md")))
+    check_one_offs = chunk_count >= 5
+
+    for i, term in enumerate(terms):
+        label = f"terms[{i}]"
+        if not isinstance(term, dict):
+            errors.append(f"{label} is not an object")
+            continue
+
+        source = term.get("source")
+        if not isinstance(source, str) or not source.strip():
+            errors.append(f"{label}.source is missing or empty")
+            source = ""
+        else:
+            label = f"terms[{i}] ({source})"
+
+        target = term.get("target")
+        if not isinstance(target, str) or not target.strip():
+            errors.append(f"{label}.target is missing or empty")
+
+        tid = term.get("id")
+        if not isinstance(tid, str) or not tid.strip():
+            if fix:
+                new_id = make_term_id(source, seen_ids.keys())
+                term["id"] = new_id
+                fixes.append(f"{label}: id -> {new_id!r}")
+                tid = new_id
+            else:
+                errors.append(f"{label}.id is missing (run with --fix to derive it from source)")
+                tid = None
+        elif tid in seen_ids:
+            if fix:
+                new_id = make_term_id(source, seen_ids.keys())
+                term["id"] = new_id
+                fixes.append(f"{label}: duplicate id {tid!r} -> {new_id!r}")
+                tid = new_id
+            else:
+                errors.append(f"{label}.id {tid!r} duplicates terms[{seen_ids[tid]}] (run with --fix)")
+                tid = None
+        if tid:
+            seen_ids[tid] = i
+
+        if source:
+            key = source.lower()
+            if key in seen_sources:
+                errors.append(f"{label}.source duplicates terms[{seen_sources[key]}] — merge them manually")
+            else:
+                seen_sources[key] = i
+
+        # Optional fields
+        for field, factory in OPTIONAL_TERM_DEFAULTS.items():
+            if field not in term:
+                if fix:
+                    term[field] = factory()
+                    fixes.append(f"{label}: added {field}")
+                else:
+                    warnings.append(f"{label}.{field} missing")
+
+        aliases = term.get("aliases", [])
+        if aliases is not None and not isinstance(aliases, list):
+            errors.append(f"{label}.aliases must be an array")
+        else:
+            for alias in aliases or []:
+                if not isinstance(alias, str) or not alias.strip():
+                    errors.append(f"{label}.aliases contains an empty/non-string value")
+                elif alias.lower() in all_sources and alias.lower() != str(source).lower():
+                    warnings.append(f"{label}: alias {alias!r} is also a separate term's source — merge them")
+
+        category = term.get("category")
+        if category is not None and category not in VALID_CATEGORIES:
+            warnings.append(f"{label}.category {category!r} not in {sorted(VALID_CATEGORIES)}")
+        gender = term.get("gender")
+        if gender is not None and gender not in VALID_GENDERS:
+            warnings.append(f"{label}.gender {gender!r} not in {sorted(VALID_GENDERS)}")
+        confidence = term.get("confidence")
+        if confidence is not None and confidence not in VALID_CONFIDENCE:
+            warnings.append(f"{label}.confidence {confidence!r} not in {sorted(VALID_CONFIDENCE)}")
+
+        freq = term.get("frequency")
+        if freq is not None and not isinstance(freq, int):
+            warnings.append(f"{label}.frequency is not an integer ({freq!r})")
+        elif isinstance(freq, int) and freq == 0:
+            warnings.append(f"{label}: frequency 0 — термин не встречается в книге (run count-frequencies?)")
+        elif isinstance(freq, int) and freq == 1 and check_one_offs:
+            warnings.append(
+                f"{label}: frequency 1 — возможно, одноразовое имя "
+                f"(благодарности / вступление автора); такие в глоссарий не нужны"
+            )
+
+    # ── report ───────────────────────────────────────────────────────
+    if fix and fixes and not errors:
+        save_glossary(temp_dir, data, allow_empty=False)
+
+    if fixes:
+        print(f"FIXED ({len(fixes)}):")
+        for f in fixes[:40]:
+            print(f"  🔧 {f}")
+        if len(fixes) > 40:
+            print(f"  ... and {len(fixes) - 40} more")
+        if errors:
+            print("  (not saved — errors remain, see below)")
+        print()
+
+    if errors:
+        print(f"GLOSSARY VALIDATION FAILED: {len(errors)} error(s)")
+        for e in errors[:40]:
+            print(f"  ❌ {e}")
+        if len(errors) > 40:
+            print(f"  ... and {len(errors) - 40} more")
+        print()
+        print("Fix glossary.json via scripts/shared/edit_glossary_template.py")
+        print("(json.loads + json.dumps — never str.replace), then re-run this command.")
+        sys.exit(1)
+
+    print(f"GLOSSARY OK: {len(terms)} terms, version {data.get('version')}")
+    if warnings:
+        print(f"  {len(warnings)} warning(s):")
+        for w in warnings[:30]:
+            print(f"  ⚠️  {w}")
+        if len(warnings) > 30:
+            print(f"  ... and {len(warnings) - 30} more warnings")
+
+
 def reset_run_state(temp_dir: Path, prune_zero_freq: bool = False) -> None:
     """Strip stale per-run metadata from glossary.json.
 
@@ -404,6 +855,16 @@ def reset_run_state(temp_dir: Path, prune_zero_freq: bool = False) -> None:
                 kept.append(term)
             else:
                 pruned_sources.append(term.get("source", "?"))
+        if not kept and before_count:
+            print(
+                "ABORT: --prune-zero-freq удалил бы ВСЕ термины "
+                f"({before_count} шт., у всех frequency == 0).\n"
+                "  Скорее всего частоты просто не пересчитаны: сначала запусти\n"
+                f'  python3 glossary.py count-frequencies "{temp_dir}"\n'
+                "  glossary.json НЕ изменён.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         glossary["terms"] = kept
         terms = kept
 
@@ -638,7 +1099,7 @@ def _inspect_manifest(temp_dir: Path) -> None:
         print(f"  size stats: min={min(sizes)}, max={max(sizes)}, avg={sum(sizes) // len(sizes)}")
 
 
-if __name__ == "__main__":
+def main() -> None:
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
@@ -656,6 +1117,12 @@ if __name__ == "__main__":
             print("Usage: glossary.py print-terms-for-chunk <temp_dir> <chunk_file>")
             sys.exit(1)
         print_terms_for_chunk(Path(sys.argv[2]), sys.argv[3])
+
+    elif command == "validate-glossary":
+        if len(sys.argv) < 3:
+            print("Usage: glossary.py validate-glossary <temp_dir> [--fix]")
+            sys.exit(1)
+        validate_glossary(Path(sys.argv[2]), fix="--fix" in sys.argv)
 
     elif command == "validate-manifest":
         if len(sys.argv) < 3:
@@ -683,6 +1150,53 @@ if __name__ == "__main__":
             sys.exit(1)
         _inspect_manifest(Path(sys.argv[2]))
 
+    elif command == "confirm-terms":
+        if len(sys.argv) < 3:
+            print(
+                "Usage: glossary.py confirm-terms <temp_dir> "
+                "[--all] [--id ID ...] [--source NAME ...] [--note TEXT] [--force]"
+            )
+            sys.exit(1)
+        temp_dir = Path(sys.argv[2])
+        all_terms = "--all" in sys.argv
+        force = "--force" in sys.argv
+        note = sys.argv[sys.argv.index("--note") + 1] if "--note" in sys.argv else None
+        term_ids: list[str] = []
+        sources: list[str] = []
+        if "--id" in sys.argv:
+            idx = sys.argv.index("--id")
+            for a in sys.argv[idx + 1 :]:
+                if a.startswith("--"):
+                    break
+                term_ids.append(a)
+        if "--source" in sys.argv:
+            idx = sys.argv.index("--source")
+            for a in sys.argv[idx + 1 :]:
+                if a.startswith("--"):
+                    break
+                sources.append(a)
+        if not (all_terms or term_ids or sources):
+            print("ERROR: укажи --all, --id или --source", file=sys.stderr)
+            sys.exit(1)
+        confirm_terms(
+            temp_dir,
+            all_terms=all_terms,
+            term_ids=(term_ids or None),
+            sources=(sources or None),
+            note=note,
+            force=force,
+        )
+
     else:
         print(f"Unknown command: {command}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except GlossaryError as e:
+        # Never swallow a glossary problem: fail loudly with a non-zero exit
+        # so the orchestrator cannot mistake data loss for success.
+        print(f"GLOSSARY ERROR: {e}", file=sys.stderr)
         sys.exit(1)

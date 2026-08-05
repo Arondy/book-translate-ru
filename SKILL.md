@@ -153,6 +153,17 @@ python3 {baseDir}/scripts/shared/save_state.py "<temp_dir>" <step_number> \
    Сообщи пользователю: глоссарий собран, вот ключевые термины, проверь
    и ответь «продолжить». **Только после явного «продолжить» — запускай
    шаг 4.** Не интерпретируй молчание, «ок» или общие фразы как согласие.
+8. **Проверяй файлы на диске, а не отчёты субагентов.** Субагент может
+   отчитаться «записал 78 терминов и проверил», когда на диске лежит
+   пустой или битый файл. После **любой** записи `glossary.json` (своей
+   или субагента) — обязательный шлюз:
+   ```bash
+   python3 {baseDir}/scripts/phase1_prepare/glossary.py validate-glossary "<temp_dir>"
+   ```
+   Схема `glossary.json` (top-level `"version": 2` обязателен, `id`
+   генерируется скриптом) — `references/meta-json-schema.md`, Часть 1.
+   Правка `glossary.json` — только через
+   `scripts/shared/edit_glossary_template.py`, никогда `str.replace`/sed.
 
 ---
 
@@ -169,7 +180,7 @@ book-translate-ru/
 │   ├── phase-3-finish.md                 # шаги 7-9
 │   ├── compaction-points.md              # точки сжатия контекста (когда и что)
 │   ├── windows-powershell.md             # Windows + PowerShell ограничения
-│   └── meta-json-schema.md               # детальная схема meta.json
+│   └── meta-json-schema.md               # схемы glossary.json (Часть 1) и meta.json (Часть 2)
 ├── scripts/
 │   ├── shared/                           # общие скрипты для всех фаз
 │   │   ├── config.py                     # загрузчик config.toml
@@ -186,7 +197,7 @@ book-translate-ru/
 │   │   ├── detect_epigraphs.py           # эпиграфы + сноски (детерминированно)
 │   │   ├── narrator_marker.py            # группировка чанков по heading'ам
 │   │   ├── extract_footnotes.py          # EPUB-сноски из отдельного XHTML → [^N]
-│   │   └── glossary.py                   # частоты, per-chunk терм-таблицы, валидация, reset-run-state
+│   │   └── glossary.py                   # частоты, per-chunk таблицы, validate-glossary, find-duplicates, reset-run-state, confirm-terms
 │   ├── phase2_translate/                 # шаги 4-6
 │   │   ├── chunk_context.py              # neighbour context (prev/next excerpt)
 │   │   ├── run_state.py                  # planner (plan/record/status/mark-failed)

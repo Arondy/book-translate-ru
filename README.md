@@ -42,7 +42,7 @@ book-translate-ru/
 │   ├── phase-3-finish.md               Шаги 7–9
 │   ├── compaction-points.md            Точки сжатия контекста
 │   ├── windows-powershell.md           Ограничения Windows + PowerShell
-│   └── meta-json-schema.md             Схема meta.json и правила валидации
+│   └── meta-json-schema.md             Схемы glossary.json и meta.json, правила валидации
 │
 ├── scripts/
 │   ├── shared/
@@ -61,7 +61,7 @@ book-translate-ru/
 │   │   ├── detect_epigraphs.py         Эпиграфы и сноски
 │   │   ├── narrator_marker.py          Группировка чанков по заголовкам
 │   │   ├── extract_footnotes.py        EPUB-сноски из отдельного XHTML
-│   │   └── glossary.py                 Частоты, find-duplicates, reset-run-state
+│   │   └── glossary.py                 Частоты, validate-glossary, find-duplicates, confirm-terms, reset-run-state
 │   │
 │   ├── phase2_translate/
 │   │   ├── chunk_context.py            Соседний контекст
@@ -174,6 +174,15 @@ batch_size = 4              # Рекомендуемый размер батча
 ### Глоссарий с обратной связью
 
 Субагенты предлагают новые термины в `meta.json`. Скрипт `merge_meta.py` мержит их транзакционно — либо все изменения применяются, либо ни одного. Команда `find-duplicates` находит близкие дубликаты: единственное/множественное число, краткие и полные имена, пересечения алиасов. После каждого батча новые термины показываются пользователю для проверки.
+
+`glossary.json` защищён от разрушающих записей: top-level `"version": 2` обязателен, скрипты никогда не подменяют существующий глоссарий пустым дефолтом и не пишут пустой список терминов поверх непустого. Команда `validate-glossary [--fix]` — обязательный шлюз после любой записи в глоссарий: проверяет схему, обязательные поля, уникальность, а также подсвечивает одноразовые термины (`frequency` 0–1). Поле `id` каждого термина генерируется из английского названия автоматически (`Tracker's Lenses` → `trackers_lenses`).
+
+Субагенты добавляют новые термины с `confidence: "low"`. Когда пользователь подтверждает вариант, подними уверенность до `"high"` штатной командой `confirm-terms` (по `--all`, `--source` или `--id`), которая безопасно сериализует JSON, дописывает `notes: "confirmed by user"` и не трогает уже подтверждённые термины:
+
+```bash
+python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --all
+python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --source "Brightsand"
+```
 
 ### Сборка FB2
 

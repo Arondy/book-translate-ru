@@ -347,6 +347,9 @@ no-op metas будут пересканироваться вечно.
 
 ```bash
 python3 {baseDir}/scripts/phase2_translate/merge_meta.py status "<temp_dir>"
+
+# Шлюз схемы — сразу после apply-merge:
+python3 {baseDir}/scripts/phase1_prepare/glossary.py validate-glossary "<temp_dir>"
 ```
 
 Вывод:
@@ -401,13 +404,35 @@ Severity rules (не fail'ят прогон, но flag'аются):
 
 **Что делать:**
 1. Если пользователь сказал «продолжить» — идти к следующему батчу.
-2. Если пользователь предложил другой вариант — вручную поправить
+2. Если пользователь подтвердил варианты («ОК», «всё верно») — поднять
+   их `confidence` с `low`/`medium` до `high` по обратной связи.
+   Штатная команда (безопасная сериализация, не строковая подстановка):
+   ```bash
+   # подтвердить все свежедобавленные (low/medium) термины батча:
+   python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --all
+   # или точечно, по английскому названию (source) / id:
+   python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --source "Brightsand"
+   python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --id brightsand
+   ```
+   Команда ставит `confidence: "high"` и дописывает `notes: "confirmed by user"`
+   (к существующей note, без дублей). Термины уже с `high` не трогает
+   (кроме `--force`). После неё — обязательный шлюз:
+   ```bash
+   python3 {baseDir}/scripts/phase1_prepare/glossary.py validate-glossary "<temp_dir>"
+   ```
+3. Если пользователь предложил другой вариант — вручную поправить
    `glossary.json` (поле `target` у соответствующей сущности, поменять
    `confidence` на `"high"`, добавить `notes: "confirmed by user"`).
-   После правки **пересчитать частоты**:
+   После правки **провалидировать схему и пересчитать частоты**:
    ```bash
+   python3 {baseDir}/scripts/phase1_prepare/glossary.py validate-glossary "<temp_dir>"
    python3 {baseDir}/scripts/phase1_prepare/glossary.py count-frequencies "<temp_dir>"
    ```
+   `validate-glossary` — обязательный шлюз после **любой** записи в
+   `glossary.json` (в том числе после `apply-merge`): он ловит потерю
+   top-level `"version": 2`, пустой `terms`, дубликаты id/source и
+   недостающие поля. Без `version` скрипты остановятся с ошибкой, а
+   раньше — молча затирали собранные термины.
 
 > **⚠️ КРИТИЧНО: не правь `glossary.json` строковой подстановкой!**
 > JSON-массивы и объекты требуют правильных запятых между элементами.
@@ -434,14 +459,14 @@ Severity rules (не fail'ят прогон, но flag'аются):
 > ```
 >
 > **Никогда не делай `glossary.json` edit через `str.replace` или sed.**
-3. Если пользователь изменил существующий вариант — оркестратор
-   может предложить пере-перевести чанки, где этот термин уже
-   использовался. Решение за пользователем; в `run_state.py` есть
-   `plan --retranslate-untracked` для форсирования пере-перевода
-   конкретных чанков.
-4. **Не задавать этот вопрос на каждом чанке** — только один раз
-   после завершения батча (4–8 чанков). Если в батче не появилось
-   новых low-confidence терминов — не беспокоить пользователя.
+ 4. Если пользователь изменил существующий вариант — оркестратор
+    может предложить пере-перевести чанки, где этот термин уже
+    использовался. Решение за пользователем; в `run_state.py` есть
+    `plan --retranslate-untracked` для форсирования пере-перевода
+    конкретных чанков.
+ 5. **Не задавать этот вопрос на каждом чанке** — только один раз
+    после завершения батча (4–8 чанков). Если в батче не появилось
+    новых low-confidence терминов — не беспокоить пользователя.
 
 > **Антипаттерн:** молча проглотить всё, что sub-агенты предложили
 > в `new_entities`, и не показать пользователю до самого конца
