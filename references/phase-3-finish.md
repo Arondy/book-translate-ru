@@ -198,7 +198,7 @@ python3 {baseDir}/scripts/phase3_finish/merge_and_build.py --temp-dir "<temp_dir
 - **`output_chunkNNNN.qa.json`** — QA-issues из шага 7.5
   (субагент **обязан** прочитать его и устранить перечисленные
   issues — terminology/voice/plot — в рамках грамматического +
-  литературного прохода; см. обновлённый промпт `полировка_чанка.md`)
+   литературного прохода; см. промпт `полировка_чанка.md`)
 - `structural_units.json` — если в чанке есть эпиграф/сноска
 - `narrator_hints.json` — к какому arc принадлежит чанк
 - `templates/голос_книги.md` — для сверки голоса
@@ -328,14 +328,6 @@ Exit codes: 0 = OK или warnings; 1 = issues (или warnings с `--strict`);
 LLM, quality_check работает по собранному `output.md` с regex.
 Они дополняют друг друга.
 
-> **Реальный кейс из тестового прогона:** `quality_check.py` флагал
-> 28 `garbage_dashes` для инлайн `---` (Сандерсон использует `---`
-> как эм-тире в EPUB). Это были легитимные эм-тире, а не MT-мусор.
-> Текущая версия флагает только последовательности 3+ разделителей
-> с пробелами. Также флагалось 85 `doubled_punct` для `..` внутри
-> относительных путей (`../images/...`) и эллипсисов (`...`).
-> Текущая версия игнорирует `..` внутри путей и `...` эллипсисы.
-
 ---
 
 ## Шаг 8.5. Пост-мортем анализ
@@ -435,7 +427,7 @@ python3 {baseDir}/scripts/phase3_finish/merge_and_build.py --temp-dir "<temp_dir
 **Если FB2 не собирается** — смотри stderr, там будет указан проблемный чанк.
 Можно временно переключиться на Pandoc-сборку флагом `--pandoc-fallback`
 (только для отладки; результат будет с теми же проблемами вёрстки,
-что и раньше):
+что и при прямой сборке Pandoc'ом):
 ```bash
 python3 {baseDir}/scripts/phase3_finish/merge_and_build.py --temp-dir "<temp_dir>" \
     --title "Название" --pandoc-fallback
