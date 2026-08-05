@@ -108,7 +108,7 @@ python3 {baseDir}/scripts/phase3_finish/pronoun_check.py "<temp_dir>" --save "<t
 # 4. Покажи пользователю N рекомендаций из pronoun_check_report.json.
 #    Спроси, какие применить. Для каждой одобренной — используй
 #    edit_glossary_template.py (НЕ str.replace). После правки —
-#    glossary.py count-frequencies.
+#    glossary.py validate-glossary, затем glossary.py count-frequencies.
 ```
 
 **Когда запускать**:
@@ -152,6 +152,7 @@ if key.lower() == source.lower():
 
 # Или — token-boundary regex:
 import re
+
 pattern = re.compile(r"\b" + re.escape(key) + r"\b", re.IGNORECASE)
 if pattern.fullmatch(source):  # всё поле source — это key
     apply_gender(glossary, source, gender)

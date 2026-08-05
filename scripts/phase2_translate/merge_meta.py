@@ -50,21 +50,55 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import process_dir  # ─────────────────────────────────────────────────────────────────────
+from common import (
+    ensure_term_ids,
+    make_term_id,
+    process_dir,
+)  # ─────────────────────────────────────────────────────────────────────
 
 # Helpers
 # ─────────────────────────────────────────────────────────────────────
+
+GLOSSARY_VERSION = 2  # top-level "version" — MANDATORY in glossary.json
 
 
 def stable_hash(obj) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+def _die(message: str) -> None:
+    """Abort loudly. Used where continuing would risk destroying the glossary."""
+    print(f"GLOSSARY ERROR: {message}", file=sys.stderr)
+    sys.exit(1)
+
+
+def _disk_terms_count(temp_dir: Path) -> int | None:
+    """Number of terms physically present in glossary.json (schema-agnostic)."""
+    path = temp_dir / "glossary.json"
+    if not path.exists():
+        return None
+    try:
+        from config import read_json_safe
+
+        data = read_json_safe(path)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("terms"), list):
+        return None
+    return len(data["terms"])
+
+
 def load_glossary(temp_dir: Path) -> dict:
+    """Load glossary.json strictly — never silently fall back to empty.
+
+    An empty fallback here is catastrophic: apply-merge would write that
+    empty glossary back over the real one (see references/meta-json-schema.md,
+    "Схема glossary.json (v2)").
+    """
     path = temp_dir / "glossary.json"
     if not path.exists():
         return {
-            "version": 2,
+            "version": GLOSSARY_VERSION,
             "terms": [],
             "high_frequency_top_n": 20,
             "applied_meta_hashes": {},
@@ -75,22 +109,35 @@ def load_glossary(temp_dir: Path) -> dict:
 
     try:
         g = read_json_safe(path)
-    except (json.JSONDecodeError, OSError) as e:
-        print(f"WARN: could not parse glossary.json: {e}", file=sys.stderr)
-        return {
-            "version": 2,
-            "terms": [],
-            "high_frequency_top_n": 20,
-            "applied_meta_hashes": {},
-        }
-    if g.get("version") != 2:
+    except (json.JSONDecodeError, OSError, ValueError) as e:
+        _die(
+            f"{path} существует, но не читается как JSON: {e}\n"
+            f"  Мерж остановлен — пустой глоссарий не подставляется.\n"
+            f"  Почини файл (scripts/shared/edit_glossary_template.py) и повтори."
+        )
+
+    if not isinstance(g, dict):
+        _die(f"{path}: top-level JSON должен быть объектом, а не {type(g).__name__}.")
+
+    if not isinstance(g.get("terms"), list):
+        _die(
+            f'{path}: нет массива "terms".\n'
+            f"  Похоже, файл перезаписан неверной схемой. Проверь:\n"
+            f'  python3 scripts/phase1_prepare/glossary.py validate-glossary "{temp_dir}"'
+        )
+
+    if g.get("version") != GLOSSARY_VERSION:
         print(
-            f"WARN: glossary version != 2 (got {g.get('version')}); treating as v2 with existing terms.",
+            f"WARN: glossary version != {GLOSSARY_VERSION} (got {g.get('version')!r}); "
+            f"treating as v{GLOSSARY_VERSION} with existing terms "
+            f"({len(g['terms'])} шт.) and rewriting the key on save.",
             file=sys.stderr,
         )
-    g.setdefault("terms", [])
+        g["version"] = GLOSSARY_VERSION
+
     g.setdefault("high_frequency_top_n", 20)
     g.setdefault("applied_meta_hashes", {})
+    ensure_term_ids(g["terms"])
     return g
 
 
@@ -100,7 +147,22 @@ def save_glossary_atomic(temp_dir: Path, glossary: dict):
     Uses atomic_write_json from config module — retries on PermissionError
     (common on Windows when file is locked by antivirus/editor) and falls
     back to non-atomic write if needed. See config.atomic_write_json.
+
+    Refuses to write an empty term list over a non-empty file — that is
+    exactly the destructive pattern that once wiped a 78-term glossary.
     """
+    glossary["version"] = GLOSSARY_VERSION
+    ensure_term_ids(glossary.get("terms", []))
+
+    if not glossary.get("terms"):
+        on_disk = _disk_terms_count(temp_dir)
+        if on_disk:
+            _die(
+                f"ОТКАЗ ОТ ЗАПИСИ: мерж хочет записать 0 терминов поверх {on_disk} на диске.\n"
+                f'  Проверь glossary.json: python3 scripts/phase1_prepare/glossary.py validate-glossary "{temp_dir}"\n'
+                f"  glossary.json НЕ изменён."
+            )
+
     from config import atomic_write_json
 
     atomic_write_json(temp_dir / "glossary.json", glossary, indent=2, ensure_ascii=False)
@@ -180,10 +242,10 @@ def find_existing_term(glossary: dict, source: str) -> dict | None:
     """Find a term by source (case-insensitive) or by alias."""
     src_lower = source.lower()
     for t in glossary["terms"]:
-        if t["source"].lower() == src_lower:
+        if str(t.get("source", "")).lower() == src_lower:
             return t
-        for alias in t.get("aliases", []):
-            if alias.lower() == src_lower:
+        for alias in t.get("aliases", []) or []:
+            if str(alias).lower() == src_lower:
                 return t
     return None
 
@@ -541,10 +603,11 @@ def apply_merge(temp_dir: Path, payload: dict):
             # Check surface-form uniqueness (no two terms with same source/alias)
             new_src = item["source"]
             new_tgt = item["target"]
-            new_id = new_src  # use source as id (matches glossary.py convention)
             if find_existing_term(glossary, new_src):
                 # Already exists — skip (race condition between prepare and apply)
                 continue
+            # id is derived from source, never hand-written (see common.make_term_id)
+            new_id = make_term_id(new_src, {t.get("id") for t in glossary["terms"]})
             # Check new_src isn't already an alias of another term
             for t in glossary["terms"]:
                 if new_src.lower() in [a.lower() for a in t.get("aliases", [])]:
@@ -666,7 +729,7 @@ def apply_merge(temp_dir: Path, payload: dict):
                     variant = p["variants"][idx]
                     glossary["terms"].append(
                         {
-                            "id": src,
+                            "id": make_term_id(src, {t.get("id") for t in glossary["terms"]}),
                             "source": src,
                             "target": variant["target_proposal"],
                             "aliases": [],
@@ -720,11 +783,16 @@ def apply_merge(temp_dir: Path, payload: dict):
                 "auto_applied": len(auto_apply),
                 "decisions_resolved": len(decisions),
                 "consumed_chunks": len(consumed_chunk_ids),
+                "terms_total": len(glossary["terms"]),
                 "errors": 0,
             },
             ensure_ascii=False,
             indent=2,
         )
+    )
+    print(
+        'Next: python3 scripts/phase1_prepare/glossary.py validate-glossary "<temp_dir>"',
+        file=sys.stderr,
     )
 
 

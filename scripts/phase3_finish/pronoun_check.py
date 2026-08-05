@@ -42,9 +42,22 @@ def collect(temp_dir: Path) -> dict:
         from config import read_json_safe
 
         try:
-            data["glossary"] = read_json_safe(gl_path)
-        except (json.JSONDecodeError, OSError):
-            data["glossary"] = {"terms": []}
+            glossary = read_json_safe(gl_path)
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            print(
+                f"ERROR: {gl_path} существует, но не читается как JSON: {e}\n"
+                f'  Проверь: python3 scripts/phase1_prepare/glossary.py validate-glossary "{temp_dir}"',
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if not isinstance(glossary, dict) or not isinstance(glossary.get("terms"), list):
+            print(
+                f'ERROR: {gl_path}: нет массива "terms" — сверка местоимений без глоссария бессмысленна.\n'
+                f'  Проверь: python3 scripts/phase1_prepare/glossary.py validate-glossary "{temp_dir}"',
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        data["glossary"] = glossary
     else:
         data["glossary"] = {"terms": []}
 

@@ -36,7 +36,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import process_dir  # ─────────────────────────────────────────────────────────────────────
+from common import process_dir, term_id_of  # ─────────────────────────────────────────────────────────────────────
 
 # Helpers — same hashing scheme as glossary.py
 # ─────────────────────────────────────────────────────────────────────
@@ -71,20 +71,39 @@ def save_run_state(temp_dir: Path, state: dict):
 
 
 def load_glossary(temp_dir: Path) -> dict:
-    g = load_json(temp_dir / "glossary.json", default=None)
-    if not g:
+    """Load glossary.json. Fails loudly if the file exists but is broken.
+
+    Returning an empty glossary for a broken file would silently mark every
+    chunk as "glossary changed" and trigger a full re-translation — so an
+    unreadable glossary is a hard error, not a warning.
+    """
+    path = temp_dir / "glossary.json"
+    if not path.exists():
         return {
             "version": 2,
             "terms": [],
             "high_frequency_top_n": 20,
             "applied_meta_hashes": {},
         }
+    g = load_json(path, default=None)
+    if not isinstance(g, dict) or not isinstance(g.get("terms"), list):
+        print(
+            f"ERROR: {path} существует, но не читается как глоссарий v2 "
+            f'(нет валидного JSON или массива "terms").\n'
+            f'  Проверь: python3 scripts/phase1_prepare/glossary.py validate-glossary "{temp_dir}"',
+            file=sys.stderr,
+        )
+        sys.exit(1)
     return g
 
 
 def current_entity_hashes(glossary: dict) -> dict[str, str]:
-    """{term_id: stable_hash(term)} for the current glossary."""
-    return {t["id"]: stable_hash(t) for t in glossary.get("terms", [])}
+    """{term_id: stable_hash(term)} for the current glossary.
+
+    `id` is derived from `source` when missing (see common.make_term_id),
+    so a hand-edited glossary without ids does not crash the planner.
+    """
+    return {term_id_of(t): stable_hash(t) for t in glossary.get("terms", [])}
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -228,7 +247,7 @@ def record(temp_dir: Path, chunk_ids: list[str]):
             )
         state["chunks"][chunk_id] = {
             "glossary_version": 2,
-            "entity_ids_used": [t["id"] for t in glossary.get("terms", [])],
+            "entity_ids_used": [term_id_of(t) for t in glossary.get("terms", [])],
             "entity_hashes": dict(cur_hashes),
             "output_exists": output_path.exists(),
             "output_size": (output_path.stat().st_size if output_path.exists() else 0),

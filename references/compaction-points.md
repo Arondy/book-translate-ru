@@ -32,7 +32,9 @@
 
 **Перед compact убедись, что на диске:**
 - `progress.json` обновлён (`save_state.py 3 --note "глоссарий подтверждён"`)
-- `glossary.json` сохранён (пользователь мог править)
+- `glossary.json` сохранён (пользователь мог править) и проходит
+  `glossary.py validate-glossary "<temp_dir>"` — после compact разбираться,
+  почему глоссарий пуст, будет уже нечем
 - `голос_книги.md` сохранён (пользователь мог править)
 - `manifest.json`, `chunk_sections.json`, `structural_units.json`,
   `narrator_hints.json` — все созданы шагом 2 / 2.5
@@ -55,7 +57,8 @@ decisions по merge, держал evidence-цитаты. Дальше идут 
 
 **Перед compact убедись, что на диске:**
 - `progress.json` обновлён (`save_state.py 6 --note "перевод завершён"`)
-- `glossary.json` — финальный, со всеми merged entities
+- `glossary.json` — финальный, со всеми merged entities, проходит
+  `glossary.py validate-glossary "<temp_dir>"`
 - `run_state.json` — со всеми recorded chunks
 - `output_chunkNNNN.md` + `output_chunkNNNN.meta.json` — все на диске
 
