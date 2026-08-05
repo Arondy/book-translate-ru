@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Run-state planner for book-translate-ru skill.
 
 Determines which chunks need to be (re-)translated based on:
@@ -30,21 +29,13 @@ import json
 import sys
 from pathlib import Path
 
-# Ensure UTF-8 output on Windows (cp1251 default breaks on non-ASCII)
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import process_dir, term_id_of  # ─────────────────────────────────────────────────────────────────────
+from common import process_dir, stable_hash, term_id_of
+from glossary_io import GlossaryError
+from glossary_io import load_glossary as load_glossary_io
 
-# Helpers — same hashing scheme as glossary.py
+# Helpers
 # ─────────────────────────────────────────────────────────────────────
-
-
-def stable_hash(obj) -> str:
-    """Deterministic hash across Python processes (PYTHONHASHSEED-safe)."""
-    return hashlib.sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def load_json(path: Path, default=None):
@@ -77,24 +68,11 @@ def load_glossary(temp_dir: Path) -> dict:
     chunk as "glossary changed" and trigger a full re-translation — so an
     unreadable glossary is a hard error, not a warning.
     """
-    path = temp_dir / "glossary.json"
-    if not path.exists():
-        return {
-            "version": 2,
-            "terms": [],
-            "high_frequency_top_n": 20,
-            "applied_meta_hashes": {},
-        }
-    g = load_json(path, default=None)
-    if not isinstance(g, dict) or not isinstance(g.get("terms"), list):
-        print(
-            f"ERROR: {path} существует, но не читается как глоссарий v2 "
-            f'(нет валидного JSON или массива "terms").\n'
-            f'  Проверь: python3 scripts/phase1_prepare/glossary.py validate-glossary "{temp_dir}"',
-            file=sys.stderr,
-        )
+    try:
+        return load_glossary_io(temp_dir)
+    except GlossaryError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
-    return g
 
 
 def current_entity_hashes(glossary: dict) -> dict[str, str]:

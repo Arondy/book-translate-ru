@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Markdown → FB2 builder using lxml.etree.
 
 Builds a FictionBook 2.0 (.fb2) file from Markdown with correct handling of:
@@ -99,8 +98,12 @@ def _load_image(path: Path) -> tuple[str, bytes] | None:
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _process_inline_to_children(text: str, parent: etree._Element) -> list[etree._Element | str]:
-    """Convert inline Markdown to a list of lxml children + text fragments."""
+def _process_inline_to_children(text: str) -> list[etree._Element | str]:
+    """Convert inline Markdown to a list of lxml elements + text fragments.
+
+    Elements are created parentless (etree.Element) — the caller appends
+    them to the real parent, so no placeholder element is needed.
+    """
     children: list[etree._Element | str] = []
     buf = ""
 
@@ -131,43 +134,28 @@ def _process_inline_to_children(text: str, parent: etree._Element) -> list[etree
                 continue
             flush()
             if kind == "code":
-                el = etree.SubElement(parent, _q("code"))
+                el = etree.Element(_q("code"))
                 el.text = m.group(1)
                 children.append(el)
             elif kind == "bold":
-                el = etree.SubElement(parent, _q("strong"))
+                el = etree.Element(_q("strong"))
                 el.text = m.group(1)
                 children.append(el)
             elif kind == "italic":
-                el = etree.SubElement(parent, _q("emphasis"))
+                el = etree.Element(_q("emphasis"))
                 el.text = m.group(1)
                 children.append(el)
             elif kind == "image":
-                # Inline image: ![alt](src) → <image xl:href="#_img_N"/>
-                # The binary_id must be in image_id_map; we use a placeholder
-                # here and the caller (_build_inline) doesn't have access to
-                # image_id_map. So we store the src and resolve later.
-                # Workaround: emit <image xl:href="#SRC"/> with raw src;
-                # _build_body's image_id_map won't help here.
-                # Better: just emit the image with the src as-is; collect_images
-                # has already loaded it. We need the binary_id.
-                # Since _process_inline_to_children doesn't have access to
-                # image_id_map, we emit a placeholder and post-process.
-                # For now, emit <image xl:href="#{src}"/> — fb2_builder's
-                # collect_images uses src as key, and we can map later.
+                # Inline image: ![alt](src) — href is remapped to the
+                # binary id (#_img_N) by the caller via image_id_map.
                 img_src = m.group(2)
-                img_el = etree.SubElement(parent, _q("image"))
-                # Use src as href temporarily; will be remapped to #_img_N
-                # in a post-processing step if needed. For simplicity, we
-                # use the binary_id from image_id_map if available — but
-                # that's not accessible here. So we use src directly.
-                # The caller should pass image_id_map if needed.
+                img_el = etree.Element(_q("image"))
                 img_el.set(_qxl("href"), f"#{img_src}")
                 img_el.set(_qxl("type"), "simple")
                 children.append(img_el)
             elif kind == "footnote":
                 fn_id = m.group(1)
-                a = etree.SubElement(parent, _q("a"))
+                a = etree.Element(_q("a"))
                 a.set(_qxl("href"), f"#note_{fn_id}")
                 a.set(_qxl("type"), "simple")
                 sup = etree.SubElement(a, _q("sup"))
@@ -176,7 +164,7 @@ def _process_inline_to_children(text: str, parent: etree._Element) -> list[etree
             elif kind == "link":
                 text_part = m.group(1)
                 url = m.group(2)
-                a = etree.SubElement(parent, _q("a"))
+                a = etree.Element(_q("a"))
                 a.set(_qxl("href"), url)
                 a.set(_qxl("type"), "simple")
                 a.text = text_part
@@ -197,10 +185,7 @@ def _build_inline(text: str, parent: etree._Element, image_id_map: dict[str, str
     image_id_map: {src: binary_id} for resolving inline images.
     If None or src not in map, uses src as-is (may produce broken link).
     """
-    placeholder = etree.Element("placeholder")
-    children = _process_inline_to_children(text, placeholder)
-    for child in list(placeholder):
-        placeholder.remove(child)
+    children = _process_inline_to_children(text)
 
     # Remap inline image hrefs from #{src} to #{binary_id}
     if image_id_map:

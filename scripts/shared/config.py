@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Shared configuration loader for book-translate-ru skill.
 
 Loads config.toml from one of these locations (first match wins):
@@ -21,6 +20,7 @@ Or with section access:
 import json
 import sys
 import time
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -191,54 +191,7 @@ def read_json_safe(path: Path, encoding: str = "utf-8") -> Any:
     return sanitize_for_json(data)
 
 
-# Try Python 3.11+ tomllib, fall back to tomli, then to a minimal parser
-try:
-    import tomllib  # Python 3.11+
-
-    def _parse_toml(text: str) -> dict:
-        return tomllib.loads(text)
-except ImportError:
-    try:
-        import tomli  # type: ignore
-
-        def _parse_toml(text: str) -> dict:
-            return tomli.loads(text)
-    except ImportError:
-        # Minimal TOML parser — handles only what we use:
-        # [section], key = value (int, float, bool, string)
-        def _parse_toml(text: str) -> dict:
-            result: dict = {}
-            current_section = result
-            for line in text.splitlines():
-                line = line.split("#", 1)[0].strip()  # strip comments
-                if not line:
-                    continue
-                if line.startswith("[") and line.endswith("]"):
-                    section_name = line[1:-1].strip()
-                    current_section = result.setdefault(section_name, {})
-                    continue
-                if "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                value = value.strip()
-                # Parse value
-                if value.lower() in ("true", "false"):
-                    parsed: Any = value.lower() == "true"
-                elif value.startswith('"') and value.endswith('"'):
-                    parsed = value[1:-1]
-                elif value.startswith("'") and value.endswith("'"):
-                    parsed = value[1:-1]
-                else:
-                    try:
-                        parsed = int(value)
-                    except ValueError:
-                        try:
-                            parsed = float(value)
-                        except ValueError:
-                            parsed = value  # leave as string
-                current_section[key] = parsed
-            return result
+# TOML parsing uses stdlib tomllib (Python 3.11+).
 
 
 class ConfigSection:
@@ -385,7 +338,7 @@ def load_config(explicit_path: Path | str | None = None) -> Config:
 
     try:
         text = path.read_text(encoding="utf-8")
-        user_data = _parse_toml(text)
+        user_data = tomllib.loads(text)
     except (OSError, ValueError) as e:
         sys.stderr.write(f"[config] WARNING: could not parse {path}: {e}\n")
         sys.stderr.write("[config] Using defaults only.\n")

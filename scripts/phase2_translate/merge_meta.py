@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Transaction-safe merge of sub-agent meta observations into glossary.
 
 Sub-agents emit `output_chunk<NNNN>.meta.json` alongside their translated
@@ -38,32 +37,17 @@ Usage:
         malformed, and unmerged (sub-agent-compliance) chunks.
 """
 
-import hashlib
 import json
 import re
 import sys
 from pathlib import Path
 
-# Ensure UTF-8 output on Windows (cp1251 default breaks on non-ASCII)
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import (
-    ensure_term_ids,
-    make_term_id,
-    process_dir,
-)  # ─────────────────────────────────────────────────────────────────────
+from common import make_term_id, process_dir, stable_hash
+from glossary_io import GlossaryError, load_glossary, save_glossary
 
 # Helpers
 # ─────────────────────────────────────────────────────────────────────
-
-GLOSSARY_VERSION = 2  # top-level "version" — MANDATORY in glossary.json
-
-
-def stable_hash(obj) -> str:
-    return hashlib.sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def _die(message: str) -> None:
@@ -72,100 +56,31 @@ def _die(message: str) -> None:
     sys.exit(1)
 
 
-def _disk_terms_count(temp_dir: Path) -> int | None:
-    """Number of terms physically present in glossary.json (schema-agnostic)."""
-    path = temp_dir / "glossary.json"
-    if not path.exists():
-        return None
-    try:
-        from config import read_json_safe
-
-        data = read_json_safe(path)
-    except (json.JSONDecodeError, OSError, ValueError):
-        return None
-    if not isinstance(data, dict) or not isinstance(data.get("terms"), list):
-        return None
-    return len(data["terms"])
-
-
-def load_glossary(temp_dir: Path) -> dict:
+def _load_glossary_or_die(temp_dir: Path) -> dict:
     """Load glossary.json strictly — never silently fall back to empty.
 
     An empty fallback here is catastrophic: apply-merge would write that
     empty glossary back over the real one (see references/meta-json-schema.md,
-    "Схема glossary.json (v2)").
+    "Схема glossary.json (v2)"). Aborts in merge_meta style on GlossaryError.
     """
-    path = temp_dir / "glossary.json"
-    if not path.exists():
-        return {
-            "version": GLOSSARY_VERSION,
-            "terms": [],
-            "high_frequency_top_n": 20,
-            "applied_meta_hashes": {},
-        }
-    # Use read_json_safe to handle encoding issues on Windows (surrogates,
-    # mixed encodings from editors). Sanitizes data for clean serialization.
-    from config import read_json_safe
-
     try:
-        g = read_json_safe(path)
-    except (json.JSONDecodeError, OSError, ValueError) as e:
-        _die(
-            f"{path} существует, но не читается как JSON: {e}\n"
-            f"  Мерж остановлен — пустой глоссарий не подставляется.\n"
-            f"  Почини файл (scripts/shared/edit_glossary_template.py) и повтори."
-        )
-
-    if not isinstance(g, dict):
-        _die(f"{path}: top-level JSON должен быть объектом, а не {type(g).__name__}.")
-
-    if not isinstance(g.get("terms"), list):
-        _die(
-            f'{path}: нет массива "terms".\n'
-            f"  Похоже, файл перезаписан неверной схемой. Проверь:\n"
-            f'  python3 scripts/phase1_prepare/glossary.py validate-glossary "{temp_dir}"'
-        )
-
-    if g.get("version") != GLOSSARY_VERSION:
-        print(
-            f"WARN: glossary version != {GLOSSARY_VERSION} (got {g.get('version')!r}); "
-            f"treating as v{GLOSSARY_VERSION} with existing terms "
-            f"({len(g['terms'])} шт.) and rewriting the key on save.",
-            file=sys.stderr,
-        )
-        g["version"] = GLOSSARY_VERSION
-
-    g.setdefault("high_frequency_top_n", 20)
-    g.setdefault("applied_meta_hashes", {})
-    ensure_term_ids(g["terms"])
-    return g
+        return load_glossary(temp_dir)
+    except GlossaryError as e:
+        _die(f"Мерж остановлен: {e}")
 
 
 def save_glossary_atomic(temp_dir: Path, glossary: dict):
-    """Windows-safe atomic write of glossary.json.
+    """Windows-safe atomic write of glossary.json via glossary_io.
 
-    Uses atomic_write_json from config module — retries on PermissionError
-    (common on Windows when file is locked by antivirus/editor) and falls
-    back to non-atomic write if needed. See config.atomic_write_json.
-
-    Refuses to write an empty term list over a non-empty file — that is
-    exactly the destructive pattern that once wiped a 78-term glossary.
+    Uses glossary_io.save_glossary — retries on PermissionError (common on
+    Windows when file is locked by antivirus/editor) and refuses to write
+    an empty term list over a non-empty file: exactly the destructive
+    pattern that once wiped a 78-term glossary.
     """
-    glossary["version"] = GLOSSARY_VERSION
-    ensure_term_ids(glossary.get("terms", []))
-
-    if not glossary.get("terms"):
-        on_disk = _disk_terms_count(temp_dir)
-        if on_disk:
-            _die(
-                f"ОТКАЗ ОТ ЗАПИСИ: мерж хочет записать 0 терминов поверх {on_disk} на диске.\n"
-                f'  Проверь glossary.json: python3 scripts/phase1_prepare/glossary.py validate-glossary "{temp_dir}"\n'
-                f"  glossary.json НЕ изменён."
-            )
-
-    from config import atomic_write_json
-
-    atomic_write_json(temp_dir / "glossary.json", glossary, indent=2, ensure_ascii=False)
+    try:
+        save_glossary(temp_dir, glossary)
+    except GlossaryError as e:
+        _die(f"Мерж остановлен: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -252,7 +167,7 @@ def find_existing_term(glossary: dict, source: str) -> dict | None:
 
 def prepare_merge(temp_dir: Path) -> dict:
     """Scan all unconsumed meta files and produce a merge plan."""
-    glossary = load_glossary(temp_dir)
+    glossary = _load_glossary_or_die(temp_dir)
     applied_hashes = glossary.get("applied_meta_hashes", {})
 
     # Gather all meta files
@@ -580,7 +495,7 @@ def apply_merge(temp_dir: Path, payload: dict):
 
     On any validation error: exit non-zero, NO mutation, NO hash recording.
     """
-    glossary = load_glossary(temp_dir)
+    glossary = _load_glossary_or_die(temp_dir)
 
     # Re-run prepare-merge to validate that the decisions match the current state
     prepared = prepare_merge(temp_dir)
@@ -802,7 +717,7 @@ def apply_merge(temp_dir: Path, payload: dict):
 
 
 def status(temp_dir: Path):
-    glossary = load_glossary(temp_dir)
+    glossary = _load_glossary_or_die(temp_dir)
     applied_hashes = glossary.get("applied_meta_hashes", {})
 
     meta_files = sorted(process_dir(temp_dir).glob("output_chunk*.meta.json"))

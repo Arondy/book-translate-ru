@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Write progress.json after completing a step.
 
 This is the companion to load_state.py: after the orchestrator finishes
@@ -49,29 +48,13 @@ import json
 import sys
 from pathlib import Path
 
-# Ensure UTF-8 output on Windows
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-
-
-PHASE_FOR_STEP = {
-    1: 1,
-    2: 1,
-    3: 1,
-    4: 2,
-    5: 2,
-    6: 2,
-    7: 3,
-    8: 3,
-    9: 3,
-    10: 3,  # 10 = "all done"
-}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import common  # noqa: E402,F401  (UTF-8 reconfigure side-effect)
+from state_map import PHASE_FOR_STEP  # noqa: E402
 
 
 def atomic_write_json(path: Path, data: dict, **kwargs):
     """Write JSON atomically (tmp + rename). Imports from config.py."""
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
     from config import atomic_write_json as _awj
 
     _awj(path, data, **kwargs)

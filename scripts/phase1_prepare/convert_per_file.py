@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Alternative EPUB → Markdown-чанки converter (per-file pandoc + cleanup).
 
 This is an ALTERNATIVE to `convert.py` for EPUBs where the standard
@@ -74,11 +73,6 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
-
-# Ensure UTF-8 output on Windows
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "shared"))

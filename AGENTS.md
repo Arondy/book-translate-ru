@@ -16,6 +16,8 @@ Skill (по спецификации Agent Skills) для художествен
 
 ## Команды и проверка
 
+- Требуется **Python 3.11+** (конфиг парсится stdlib `tomllib`; fallback-парсера больше нет).
+
 ```bash
 pip install -r requirements.txt    # только beautifulsoup4, lxml — stdlib-first, тяжёлые зависимости не добавлять
 python3 {baseDir}/scripts/shared/config.py   # smoke-проверка конфига (вывод DEFAULTS)
@@ -30,9 +32,9 @@ python3 {baseDir}/scripts/shared/config.py   # smoke-проверка конфи
 - Импорт shared без `__init__.py`: в начале скрипта
   `sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))`,
   затем `from common import ...`, `from config import ...` (образец: `scripts/phase2_translate/merge_meta.py:52`).
-- Переиспользуй `common.py` (`process_dir`, `run_cmd`, `sha256_file`, `make_term_id`, `ensure_term_ids`) и `config.py` (`atomic_write_text/json`, `read_json_safe`, `sanitize_for_json`, `read_text_safe`) — не дублируй их в новых скриптах.
+- Переиспользуй `common.py` (`process_dir`, `run_cmd`, `sha256_file`, `stable_hash`, `make_term_id`, `ensure_term_ids`, `find_english_leaks`) и `config.py` (`atomic_write_text/json`, `read_json_safe`, `sanitize_for_json`, `read_text_safe`) — не дублируй их в новых скриптах. Глоссарий читай/пиши только через `scripts/shared/glossary_io.py` (`load_glossary`/`save_glossary`/`GlossaryError`).
 - `DEFAULTS` в `config.py` и значения в `config.toml` — два источника умолчаний; при правке одного синхронизируй другой. Секция `[parallelism] batch_size` — рекомендация оркестратору, скрипты её не читают.
-- Выход скриптов — `sys.stdout` в UTF-8 (реконфигурится в `config.py`), файлы — через `atomic_write_*` (Windows-safe).
+- Выход скриптов — `sys.stdout` в UTF-8 (реконфигурится при импорте `common.py`/`config.py`), файлы — через `atomic_write_*` (Windows-safe).
 
 ## Windows / PowerShell (репо разрабатывается на Windows)
 

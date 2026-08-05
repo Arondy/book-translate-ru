@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Detect epigraphs and footnotes in converted Markdown (deterministic).
 
 An epigraph is a short block of text immediately preceding a chapter heading.
@@ -18,11 +17,6 @@ Usage:
 import re
 import sys
 from pathlib import Path
-
-# Ensure UTF-8 output on Windows (cp1251 default breaks on non-ASCII)
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 from common import process_dir

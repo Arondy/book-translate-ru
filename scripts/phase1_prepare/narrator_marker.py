@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Detect structural narrator boundaries (deterministic).
 
 This script ONLY identifies chunks likely belonging to the same narrative
@@ -18,11 +17,6 @@ import re
 import sys
 from pathlib import Path
 
-# Ensure UTF-8 output on Windows (cp1251 default breaks on non-ASCII)
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 from common import process_dir  # Patterns that suggest a chapter / arc grouping. Order matters: more
 
@@ -37,8 +31,7 @@ from common import process_dir  # Patterns that suggest a chapter / arc grouping
 # Keep list conservative — over-matching creates false arc boundaries.
 _NUM_WORD = (
     r"(?:one|two|three|four|five|six|seven|eight|nine|ten|"
-    r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|"
-    r"one|two|three|four|five|six|seven|eight|nine|ten)"
+    r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
 )
 
 PATTERNS: list[tuple[re.Pattern, str]] = [

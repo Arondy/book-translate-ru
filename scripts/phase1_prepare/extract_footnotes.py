@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Extract EPUB footnotes and convert them to Markdown [^N] format.
 
 PROBLEM THIS SCRIPT SOLVES:
@@ -50,11 +49,6 @@ import shutil
 import sys
 import zipfile
 from pathlib import Path
-
-# Ensure UTF-8 output on Windows
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """TEMPLATE: Safely edit glossary.json via parse + serialize (not string substitution).
 
 This is a TEMPLATE script — COPY to <temp_dir>/process/_edit_glossary.py

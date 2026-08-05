@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Explore EPUB structure — print contents, OPF metadata, chapter list.
 
 This script exists so the orchestrator agent does NOT have to write ad-hoc

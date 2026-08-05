@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Collect data for cross-chunk pronoun consistency check (LLM-driven).
 
 This script does NOT make decisions. It assembles data and emits a prompt
@@ -17,11 +16,6 @@ Usage:
 import json
 import sys
 from pathlib import Path
-
-# Ensure UTF-8 output on Windows (cp1251 default breaks on non-ASCII)
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 from common import process_dir

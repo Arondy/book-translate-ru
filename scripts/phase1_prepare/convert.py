@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Convert EPUB/FB2 -> Markdown chunks for book-translate-ru skill.
 
 Pipeline:
@@ -22,13 +21,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Ensure UTF-8 output on Windows (cp1251 default breaks on non-ASCII)
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import process_dir, sha256_file
+from common import process_dir, run_cmd, sha256_file
 
 # Load config from config.toml (searched in cwd, *_temp/, or skill dir)
 from config import get_config
@@ -42,16 +36,6 @@ CHUNK_SIZE = _cfg.get("chunking", "chunk_size", 30000)
 SOFT_LIMIT = _cfg.get("chunking", "soft_limit", 40000)
 MIN_CHUNK = _cfg.get("chunking", "min_chunk", 200)
 CHAPTER_ONLY = _cfg.get("chunking", "chapter_only", True)
-
-
-def run_cmd(cmd: list[str], desc: str = "") -> str:
-    sys.stderr.write(f"[convert] {desc or ' '.join(cmd)}\n")
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
-        return result.stdout
-    except subprocess.CalledProcessError as e:
-        sys.stderr.write(f"[convert] ERROR: {e}\n{e.stderr}\n")
-        raise
 
 
 def run_post_step(script_path: Path, temp_dir: Path) -> None:
@@ -178,6 +162,7 @@ def html_to_markdown(html_path: Path, output_path: Path):
             str(output_path),
         ],
         f"pandoc {html_path.name} -> {output_path.name}",
+        log_desc=True,
     )
     # Clean pandoc cruft from the output (div fences, attribute blocks,
     # TOC sections, and a few defensive patterns inherited from older
@@ -291,6 +276,7 @@ def fb2_to_markdown(fb2_path: Path, output_path: Path):
             str(output_path),
         ],
         f"pandoc {fb2_path.name} -> {output_path.name}",
+        log_desc=True,
     )
 
 

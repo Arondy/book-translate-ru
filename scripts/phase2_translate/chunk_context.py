@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Extract neighbour excerpts for chunk translation context.
 
 Usage:
@@ -11,11 +10,6 @@ to resolve pronouns, scene continuity, and entity references.
 
 import sys
 from pathlib import Path
-
-# Ensure UTF-8 output on Windows (cp1251 default breaks on non-ASCII)
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 from common import process_dir

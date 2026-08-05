@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """TEMPLATE: Apply merge_meta decisions by calling apply_merge() directly.
 
 This is a TEMPLATE script — COPY to <temp_dir>/process/_apply.py and

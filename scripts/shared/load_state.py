@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Read progress.json and print current state for resume protocol.
 
 This is the resume entry point: after context compaction (or at any
@@ -24,36 +23,9 @@ import json
 import sys
 from pathlib import Path
 
-# Ensure UTF-8 output on Windows (cp1251 default breaks on non-ASCII)
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-
-
-# Phase boundaries (which steps belong to which phase)
-PHASE_FOR_STEP = {
-    1: 1,
-    2: 1,
-    3: 1,  # Phase 1: prepare, convert, glossary
-    4: 2,
-    5: 2,
-    6: 2,  # Phase 2: plan, translate, merge
-    7: 3,
-    8: 3,
-    9: 3,  # Phase 3: qa, polish, build
-}
-
-PHASE_FILES = {
-    1: "references/phase-1-prepare.md",
-    2: "references/phase-2-translate.md",
-    3: "references/phase-3-finish.md",
-}
-
-PHASE_NAMES = {
-    1: "Подготовка (steps 1-3)",
-    2: "Перевод (steps 4-6)",
-    3: "Финал (steps 7-9)",
-}
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import common  # noqa: E402,F401  (UTF-8 reconfigure side-effect)
+from state_map import PHASE_FILES, PHASE_FOR_STEP, PHASE_NAMES  # noqa: E402
 
 
 def main():

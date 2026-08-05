@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Verify polish contract (step 8b.1) across all chunks.
 
 For each chunk with a `.bak` file (saved before polish), checks:
@@ -24,26 +23,14 @@ import re
 import sys
 from pathlib import Path
 
-# Ensure UTF-8 output on Windows (cp1251 default breaks on non-ASCII)
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import process_dir  # Load config from config.toml [polish] section
+from common import process_dir
+from config import get_config  # Settings from config.toml [polish] section
 
-try:
-    from config import get_config
-
-    _cfg = get_config()
-    RATIO_MIN = _cfg.get("polish", "ratio_min", 0.5)
-    RATIO_MAX = _cfg.get("polish", "ratio_max", 2.0)
-    MAX_HEADING_DELTA = _cfg.get("polish", "max_heading_delta", 2)
-except Exception:
-    # Fallback defaults if config.py isn't importable
-    RATIO_MIN = 0.5
-    RATIO_MAX = 2.0
-    MAX_HEADING_DELTA = 2
+_cfg = get_config()
+RATIO_MIN = _cfg.get("polish", "ratio_min", 0.5)
+RATIO_MAX = _cfg.get("polish", "ratio_max", 2.0)
+MAX_HEADING_DELTA = _cfg.get("polish", "max_heading_delta", 2)
 
 
 def count_headings(text: str) -> int:

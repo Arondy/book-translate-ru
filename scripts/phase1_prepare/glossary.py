@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Glossary management for book-translate-ru skill.
 
 Usage:
@@ -61,26 +60,17 @@ import re
 import sys
 from pathlib import Path
 
-# Ensure UTF-8 output on Windows (cp1251 default breaks on non-ASCII)
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import ensure_term_ids, make_term_id, process_dir
+from common import find_english_leaks, make_term_id, process_dir
 from config import get_config
-
-
-def stable_hash(obj) -> str:
-    """Deterministic hash across Python processes (unlike built-in hash()).
-
-    Built-in hash() for strings is randomized via PYTHONHASHSEED between
-    process runs, which would make run_state.json entity_hashes unusable
-    for resume: every new orchestrator session would see 'glossary changed'
-    for every chunk and re-translate the whole book.
-    """
-    return hashlib.sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
-
+from glossary_io import (
+    GLOSSARY_FILE,
+    GLOSSARY_VERSION,
+    GlossaryError,
+    disk_terms_count,
+    load_glossary,
+    save_glossary,
+)
 
 # Word boundary that works for names with apostrophes (O'Connor) and
 # hyphens (Wit-Bit). Standard \b breaks on these because ' and - are not
@@ -104,8 +94,6 @@ def surface_in_text(surface: str, text: str) -> bool:
     return bool(re.search(pattern, text, re.IGNORECASE))
 
 
-GLOSSARY_FILE = "glossary.json"  # lives in temp_dir root (human-facing)
-GLOSSARY_VERSION = 2  # top-level "version" — MANDATORY, see load_glossary()
 MANIFEST_FILE = "manifest.json"  # lives in process/
 
 # Quality thresholds — loaded from config.toml [quality] section
@@ -115,146 +103,10 @@ RATIO_MAX = _cfg.get("quality", "ratio_max", 2.0)
 EN_LEAK_CHARS = _cfg.get("quality", "en_leak_chars", 80)
 
 
-class GlossaryError(Exception):
-    """Fatal problem with glossary.json — never swallowed, never auto-healed.
-
-    Raised instead of returning an empty default glossary: an empty default
-    would be silently written back over a real (non-empty) glossary by the
-    next save, destroying collected terms.
-    """
-
-
-def _default_glossary() -> dict:
-    """Fresh empty glossary — ONLY for the case 'file does not exist yet'."""
-    return {
-        "version": GLOSSARY_VERSION,
-        "terms": [],
-        "high_frequency_top_n": get_config().get("glossary", "high_frequency_top_n", 20),
-        "applied_meta_hashes": {},
-    }
-
-
-def disk_terms_count(temp_dir: Path) -> int | None:
-    """How many terms are physically on disk right now.
-
-    Returns None when the file is missing or unreadable/unparsable.
-    Deliberately schema-agnostic: it must see terms even in a file that
-    load_glossary() would reject (that is the whole point of the guard).
-    """
-    path = temp_dir / GLOSSARY_FILE
-    if not path.exists():
-        return None
-    try:
-        from config import read_json_safe
-
-        data = read_json_safe(path)
-    except (json.JSONDecodeError, OSError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    terms = data.get("terms")
-    if not isinstance(terms, list):
-        return None
-    return len(terms)
-
-
-def load_glossary(temp_dir: Path) -> dict:
-    """Load glossary.json strictly.
-
-    - file missing            -> fresh empty glossary (the only empty case)
-    - unreadable/invalid JSON -> GlossaryError
-    - missing "version": 2 but `terms` present -> migrated to v2 (warning)
-    - anything else           -> GlossaryError
-
-    NEVER returns an empty default for an existing file.
-    """
-    path = temp_dir / GLOSSARY_FILE
-    if not path.exists():
-        return _default_glossary()
-
-    from config import read_json_safe
-
-    try:
-        data = read_json_safe(path)
-    except (json.JSONDecodeError, OSError, ValueError) as e:
-        raise GlossaryError(
-            f"{path} существует, но не читается как JSON: {e}\n"
-            f"  Почини файл вручную (json.loads + json.dumps, см. "
-            f"scripts/shared/edit_glossary_template.py) и повтори команду.\n"
-            f"  Пустой глоссарий вместо него НЕ подставляется — иначе следующая "
-            f"запись затрёт собранные термины."
-        ) from e
-
-    if not isinstance(data, dict):
-        raise GlossaryError(f"{path}: top-level JSON должен быть объектом, а не {type(data).__name__}.")
-
-    terms = data.get("terms")
-    version = data.get("version")
-
-    if version != GLOSSARY_VERSION:
-        if isinstance(terms, list):
-            # Migrate: the payload looks like a v2 glossary, the key is just missing.
-            print(
-                f"WARN: {path}: отсутствует или неверен top-level \"version\" "
-                f"(got {version!r}); файл содержит {len(terms)} терминов — "
-                f"мигрирую как version={GLOSSARY_VERSION}.",
-                file=sys.stderr,
-            )
-            data["version"] = GLOSSARY_VERSION
-        else:
-            raise GlossaryError(
-                f"{path}: нет top-level \"version\": {GLOSSARY_VERSION} и нет массива \"terms\".\n"
-                f"  Это не глоссарий v2. Проверь файл: возможно, его перезаписал "
-                f"субагент без обязательного ключа \"version\".\n"
-                f"  Схема — references/meta-json-schema.md, раздел «Схема glossary.json (v2)».\n"
-                f"  Валидация: python3 glossary.py validate-glossary \"<temp_dir>\""
-            )
-
-    if not isinstance(data.get("terms"), list):
-        raise GlossaryError(
-            f"{path}: \"terms\" отсутствует или не является массивом.\n"
-            f"  Пустой глоссарий не подставляется. Проверь файл вручную."
-        )
-
-    data.setdefault("high_frequency_top_n", get_config().get("glossary", "high_frequency_top_n", 20))
-    data.setdefault("applied_meta_hashes", {})
-
-    # ids are derived, not hand-written: fill in whatever is missing
-    ensure_term_ids(data["terms"])
-
-    return data
-
-
-def save_glossary(temp_dir: Path, glossary: dict, *, allow_empty: bool = False):
-    """Save glossary.json using Windows-safe atomic write.
-
-    Guards against the two destructive writes that already cost us a
-    glossary once:
-      1. writing a payload without "version": 2 (would be unreadable and
-         then silently replaced by an empty default);
-      2. writing an EMPTY term list over a non-empty file on disk.
-    """
-    if not isinstance(glossary, dict) or not isinstance(glossary.get("terms"), list):
-        raise GlossaryError("save_glossary: payload не является глоссарием (нет массива \"terms\").")
-
-    glossary["version"] = GLOSSARY_VERSION
-    ensure_term_ids(glossary["terms"])
-
-    if not glossary["terms"] and not allow_empty:
-        on_disk = disk_terms_count(temp_dir)
-        if on_disk:
-            raise GlossaryError(
-                f"ОТКАЗ ОТ ЗАПИСИ: в памяти 0 терминов, а на диске их {on_disk}.\n"
-                f"  Похоже на проблему со схемой (обычно — отсутствует top-level "
-                f"\"version\": {GLOSSARY_VERSION} в glossary.json).\n"
-                f"  Проверь файл: python3 glossary.py validate-glossary \"{temp_dir}\"\n"
-                f"  glossary.json НЕ изменён."
-            )
-
-    from config import atomic_write_json
-
-    path = temp_dir / GLOSSARY_FILE
-    atomic_write_json(path, glossary, indent=2, ensure_ascii=False)
+# Glossary I/O (GlossaryError, GLOSSARY_FILE, GLOSSARY_VERSION,
+# load_glossary, save_glossary, disk_terms_count) lives in
+# scripts/shared/glossary_io.py — imported and re-exported above so
+# templates (edit_glossary_template.py) and prompts keep working.
 
 
 def confirm_terms(
@@ -372,11 +224,14 @@ def count_frequencies(temp_dir: Path):
     if not chunks:
         print(f"WARN: в {process_dir(temp_dir)} нет chunk*.md — все частоты будут 0.", file=sys.stderr)
 
+    # Read every chunk once and reuse the cached text for all terms
+    # (per-term disk reads were O(terms x chunks)).
+    chunk_texts = [c.read_text(encoding="utf-8").lower() for c in chunks]
+
     for term in terms:
         term["frequency"] = 0
         surfaces = term_surface_forms(term)
-        for chunk_path in chunks:
-            text = chunk_path.read_text(encoding="utf-8").lower()
+        for text in chunk_texts:
             for surface in surfaces:
                 if surface_in_text(surface, text):
                     term["frequency"] += 1
@@ -448,21 +303,6 @@ def print_terms_for_chunk(temp_dir: Path, chunk_file: str):
 # ─────────────────────────────────────────────────────────────────────
 
 
-def find_english_leaks(text: str, min_chars: int = EN_LEAK_CHARS) -> list[tuple[int, int, str]]:
-    """Find runs of pure-ASCII alphabetic characters likely to be untranslated
-    English text. Returns list of (start, end, snippet).
-    """
-    leaks = []
-    pattern = re.compile(r"[A-Za-z][A-Za-z\s.,;:'\"!?\-\(\)\[\]]{" + str(min_chars - 1) + r",}")
-    for m in pattern.finditer(text):
-        # Filter out cases that look like punctuation/code/markdown directives
-        snippet = m.group(0)
-        # require at least one full English word > 3 letters
-        if re.search(r"\b[A-Za-z]{4,}\b", snippet):
-            leaks.append((m.start(), m.end(), snippet))
-    return leaks
-
-
 def content_sanity_report(temp_dir: Path, manifest: dict) -> dict:
     """For each manifest entry, compute ratio + leak detection.
 
@@ -494,7 +334,7 @@ def content_sanity_report(temp_dir: Path, manifest: dict) -> dict:
         elif ratio > RATIO_MAX:
             issues.append(f"RATIO_TOO_HIGH: {ratio:.2f} (> {RATIO_MAX})")
 
-        leaks = find_english_leaks(out_text)
+        leaks = find_english_leaks(out_text, min_chars=EN_LEAK_CHARS)
         if leaks:
             sample = leaks[0][2][:60]
             issues.append(f"ENGLISH_LEAK[{len(leaks)}]: '{sample}...'")

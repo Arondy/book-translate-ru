@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Verify translation outputs and metas for a batch of chunks.
 
 This is a TEMPLATE script — run as-is, or copy to <temp_dir>/process/
@@ -21,8 +20,8 @@ empty/truncated sub-agent outputs BEFORE merge (step 6).
 import sys
 from pathlib import Path
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import common  # noqa: E402,F401  (UTF-8 reconfigure side-effect)
 
 temp_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
 start = int(sys.argv[2]) if len(sys.argv) > 2 else 1

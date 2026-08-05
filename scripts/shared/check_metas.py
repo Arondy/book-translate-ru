@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Check all output_chunk*.meta.json files for valid JSON.
 
 This is a TEMPLATE script — run as-is, or copy to <temp_dir>/process/
@@ -20,8 +19,8 @@ import json
 import sys
 from pathlib import Path
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import common  # noqa: E402,F401  (UTF-8 reconfigure side-effect)
 
 arg = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(".")
 # If given a temp_dir (has process/ subdir), use process/; else use as-is

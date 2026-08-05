@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Final structural quality checks on output.md (post-polish, pre-build).
 
 This script catches SYSTEMATIC MT bugs that survived all translation and
@@ -36,13 +35,8 @@ import re
 import sys
 from pathlib import Path
 
-# Ensure UTF-8 output on Windows (cp1251 default breaks on non-ASCII)
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import process_dir
+from common import find_english_leaks, process_dir
 from config import get_config  # Tunables — loaded from config.toml [quality] section
 
 _cfg = get_config()
@@ -59,33 +53,27 @@ RATIO_MAX = _cfg.get("quality", "ratio_max", 2.0)
 def check_orphan_footnotes(text: str) -> list[tuple[int, str]]:
     """[^N] in text without matching [^N]: definition."""
     issues = []
-    markers = re.findall(r"\[\^([^\]]+)\]", text)
     defs = re.findall(r"^\[\^([^\]]+)\]:", text, re.MULTILINE)
     defined = set(defs)
     seen_orphans = set()
-    for m in markers:
-        if m not in defined and m not in seen_orphans:
-            # Find line number
-            pattern = re.compile(r"\[\^" + re.escape(m) + r"\](?!:)")
-            match = pattern.search(text)
-            if match:
-                line = text[: match.start()].count("\n") + 1
-                issues.append((line, f"ORPHAN_FOOTNOTE: [^{m}] has no definition"))
-                seen_orphans.add(m)
+    marker_re = re.compile(r"\[\^([^\]]+)\](?!:)")
+    for m in marker_re.finditer(text):
+        marker = m.group(1)
+        if marker in defined or marker in seen_orphans:
+            continue
+        line = text[: m.start()].count("\n") + 1
+        issues.append((line, f"ORPHAN_FOOTNOTE: [^{marker}] has no definition"))
+        seen_orphans.add(marker)
     return issues
 
 
 def check_english_leaks(text: str) -> list[tuple[int, str]]:
     """Runs of ASCII letters/punct > EN_LEAK_CHARS chars (likely untranslated)."""
     issues = []
-    pattern = re.compile(r"[A-Za-z][A-Za-z\s.,;:'\"!?\-\(\)\[\]]{" + str(EN_LEAK_CHARS - 1) + r",}")
-    for m in pattern.finditer(text):
-        snippet = m.group(0)
-        # Require at least one full English word > 3 letters
-        if re.search(r"\b[A-Za-z]{4,}\b", snippet):
-            line = text[: m.start()].count("\n") + 1
-            sample = snippet[:60].replace("\n", " ")
-            issues.append((line, f"ENGLISH_LEAK: '{sample}...'"))
+    for start, _end, snippet in find_english_leaks(text, min_chars=EN_LEAK_CHARS):
+        line = text[:start].count("\n") + 1
+        sample = snippet[:60].replace("\n", " ")
+        issues.append((line, f"ENGLISH_LEAK: '{sample}...'"))
     return issues
 
 
