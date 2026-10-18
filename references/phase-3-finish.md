@@ -304,6 +304,7 @@ python3 {baseDir}/scripts/phase3_finish/quality_check.py "<temp_dir>"
 |---------|-----------|
 | Orphan footnotes | `[^N]` в тексте без `[^N]:` определения |
 | English leaks | ASCII-раны > 80 символов (непереведённые куски) |
+| Words in two alphabets | Слова с латиницей внутри кириллицы (`dошло`, `Gород`) — сбой раскладки, невидимый для LLM-пассов. Только лог, текст не правится; слова из `target` глоссария (намеренно смешанные) пропускаются |
 | Per-chapter ratio | длина перевода по главам вне 0.6×–2.0× от оригинала |
 | Garbage em-dashes | `— — —`, `—–—` (3+ разделителя с пробелами — MT-мусор). **Не флагает инлайн `---`** (это эм-тире источника; конвертируется в `—` на этапе translate/polish — см. правило 16 в `translate_chunk.md`) |
 | JS artifacts | `[object Object]`, `undefined`, `null`, `NaN` |

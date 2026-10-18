@@ -10,6 +10,7 @@ import json
 import re
 import subprocess
 import sys
+import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -162,3 +163,59 @@ def find_english_leaks(text: str, min_chars: int = 80) -> list[tuple[int, int, s
         if re.search(r"\b[A-Za-z]{4,}\b", snippet):
             leaks.append((m.start(), m.end(), snippet))
     return leaks
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Words in two alphabets
+#
+# A translation model occasionally switches keyboards mid-word: "dошло",
+# "Gород", "taкого". No LLM pass notices it — the model reads "gолосом"
+# as "голосом". Detection only: the text is never changed here, the fix
+# belongs to the translating sub-agent (the cause is upstream, in the
+# prompt or the model).
+# ─────────────────────────────────────────────────────────────────────
+
+# Target alphabet -> the alphabet whose letters inside its words are a slip.
+_SLIP_ALPHABET = {"CYRILLIC": "LATIN", "GREEK": "LATIN", "LATIN": "CYRILLIC"}
+
+_MIXED_WORD_RE = re.compile(r"[^\W\d_]+")  # letters only, Unicode-aware
+
+
+def _char_alphabet(ch: str) -> str:
+    """Return 'LATIN' / 'CYRILLIC' / 'GREEK' for a letter, else ''."""
+    name = unicodedata.name(ch, "")
+    for alphabet in ("LATIN", "CYRILLIC", "GREEK"):
+        if name.startswith(alphabet):
+            return alphabet
+    return ""
+
+
+def find_mixed_words(
+    text: str,
+    script: str = "CYRILLIC",
+    protected: Iterable[str] = (),
+) -> list[tuple[int, str]]:
+    """Find words mixing the target alphabet with a foreign one.
+
+    A word is reported when it contains letters of `script` (the alphabet
+    of the target language, default "CYRILLIC" for Russian) AND of the
+    alphabet that is a slip in it (Latin). All-Latin words inside Cyrillic
+    text (names, acronyms like "FBI") are single-alphabet and therefore
+    not reported.
+
+    `protected` are words that are intentionally mixed (e.g. glossary
+    targets); they are skipped case-insensitively.
+
+    Returns a list of (start_offset, word) in document order.
+    """
+    slip = _SLIP_ALPHABET.get(script)
+    if not slip or not text:
+        return []
+    protected_set = {w.casefold() for w in protected if w}
+    mixed: list[tuple[int, str]] = []
+    for m in _MIXED_WORD_RE.finditer(text):
+        word = m.group()
+        alphabets = {_char_alphabet(ch) for ch in word}
+        if script in alphabets and slip in alphabets and word.casefold() not in protected_set:
+            mixed.append((m.start(), word))
+    return mixed

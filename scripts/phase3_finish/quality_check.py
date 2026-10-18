@@ -28,6 +28,8 @@ Checks performed on output.md:
        "{NEIGHBOR_CONTEXT}", "{CUSTOM_INSTRUCTIONS}", "{TARGET_LANGUAGE}"
    10. English dialogue quotes: "...said X" patterns where English double
        quotes wrap dialogue (should be — ... — X in Russian)
+   11. Words mixing Cyrillic and Latin letters ('dошло', 'Gород') — a
+       two-alphabet keyboard slip no LLM pass can see; logged, never fixed
 """
 
 import json
@@ -36,7 +38,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import find_english_leaks, process_dir
+from common import find_english_leaks, find_mixed_words, process_dir
 from config import get_config  # Tunables — loaded from config.toml [quality] section
 
 _cfg = get_config()
@@ -74,6 +76,44 @@ def check_english_leaks(text: str) -> list[tuple[int, str]]:
         line = text[:start].count("\n") + 1
         sample = snippet[:60].replace("\n", " ")
         issues.append((line, f"ENGLISH_LEAK: '{sample}...'"))
+    return issues
+
+
+def _glossary_target_words(temp_dir: Path) -> list[str]:
+    """Words of every glossary `target`, to skip intentionally mixed ones.
+
+    A glossary may hold a deliberately half-Latin name ("eBook-ридер");
+    such a word must not be reported as a two-alphabet slip. Missing or
+    broken glossary.json is not an error here — just no protected words.
+    """
+    path = temp_dir / "glossary.json"
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    words: list[str] = []
+    for term in data.get("terms", []):
+        target = term.get("target")
+        if target:
+            words.extend(re.findall(r"[^\W\d_]+", target))
+    return words
+
+
+def check_mixed_alphabets(text: str, temp_dir: Path) -> list[tuple[int, str]]:
+    """Words mixing Cyrillic and Latin letters ('dошло', 'Gород').
+
+    A two-alphabet keyboard slip: no LLM pass notices it (the model reads
+    'gолосом' as 'голосом'). Detection only — the text is never changed.
+    Fixing belongs to the translating sub-agent; a systematic pattern
+    points at the prompt.
+    """
+    issues = []
+    protected = _glossary_target_words(temp_dir)
+    for start, word in find_mixed_words(text, "CYRILLIC", protected):
+        line = text[:start].count("\n") + 1
+        issues.append((line, f"MIXED_ALPHABET: '{word}'"))
     return issues
 
 
@@ -376,6 +416,7 @@ def main():
     checks = [
         ("orphan_footnotes", check_orphan_footnotes(text)),
         ("english_leaks", check_english_leaks(text)),
+        ("mixed_alphabets", check_mixed_alphabets(text, temp_dir)),
         ("garbage_dashes", check_garbage_dashes(text)),
         ("js_artifacts", check_js_artifacts(text)),
         ("code_fences", check_code_fences(text)),
