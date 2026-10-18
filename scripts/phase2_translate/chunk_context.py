@@ -40,22 +40,14 @@ def extract_excerpt(text: str, position: str, length: int) -> str:
         return excerpt.strip()
 
 
-def main():
-    if len(sys.argv) < 3:
-        print("Usage: python3 chunk_context.py <temp_dir> <chunk_file>")
-        sys.exit(1)
-
-    temp_dir = Path(sys.argv[1])
-    chunk_file = sys.argv[2]
-
+def neighbour_context(temp_dir: Path, chunk_file: str) -> str:
+    """Return the prompt-ready neighbour block for one chunk ("" if none)."""
     if not chunk_file.startswith("chunk") or not chunk_file.endswith(".md"):
-        print()
-        return
+        return ""
 
     num_str = chunk_file[5:-3]  # "chunk0042.md" -> "0042"
     if not num_str.isdigit():
-        print()
-        return
+        return ""
 
     chunk_num = int(num_str)
     prev_num = chunk_num - 1
@@ -76,15 +68,29 @@ def main():
         next_text = extract_excerpt(text, "next", CONTEXT_CHARS)
 
     if not prev_text and not next_text:
-        print()
-        return
+        return ""
 
-    print("--- neighbour context (read-only, do not translate) ---")
+    lines = ["--- neighbour context (read-only, do not translate) ---"]
     if prev_text:
-        print(f"\n[КОНЕЦ ПРЕДЫДУЩЕГО ЧАНКА]:\n{prev_text}\n")
+        lines.append(f"\n[КОНЕЦ ПРЕДЫДУЩЕГО ЧАНКА]:\n{prev_text}\n")
     if next_text:
-        print(f"\n[НАЧАЛО СЛЕДУЮЩЕГО ЧАНКА]:\n{next_text}\n")
-    print("--- end of neighbour context ---")
+        lines.append(f"\n[НАЧАЛО СЛЕДУЮЩЕГО ЧАНКА]:\n{next_text}\n")
+    lines.append("--- end of neighbour context ---")
+    return "\n".join(lines)
+
+
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: python3 chunk_context.py <temp_dir> <chunk_file>")
+        sys.exit(1)
+
+    temp_dir = Path(sys.argv[1])
+    chunk_file = sys.argv[2]
+    block = neighbour_context(temp_dir, chunk_file)
+    if block:
+        print(block)
+    else:
+        print()
 
 
 if __name__ == "__main__":

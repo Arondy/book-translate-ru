@@ -22,7 +22,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import process_dir, run_cmd, sha256_file
+from common import chunk_output_files, process_dir, run_cmd, sha256_file, strip_toc_block
 
 # Load config from config.toml (searched in cwd, *_temp/, or skill dir)
 from config import get_config
@@ -189,12 +189,12 @@ def _clean_markdown_output(md_path: Path):
     import re as _re
 
     text = md_path.read_text(encoding="utf-8")
+    # Strip a manually included TOC first: its entries may be bare headings
+    # (the Calibre anchors are unlinked below), so this must run before the
+    # per-line cleanup turns the links into plain text.
+    text = strip_toc_block(text)
     lines = text.split("\n")
     cleaned: list[str] = []
-
-    # State: skip TOC section
-    in_toc = False
-    toc_level = 0
 
     for line in lines:
         stripped = line.strip()
@@ -232,23 +232,6 @@ def _clean_markdown_output(md_path: Path):
             line = _re.sub(r"\s*\{#[^}]*\}\s*$", "", line)
             line = _re.sub(r"\s*\{\.[^}]*\}\s*$", "", line)
 
-        # TOC detection: heading "Contents"/"Оглавление" + following link entries
-        heading_match = _re.match(r"^(#{1,6})\s+(.+?)\s*$", stripped)
-        if heading_match:
-            level = len(heading_match.group(1))
-            title = heading_match.group(2).lower()
-            if title in ("contents", "оглавление", "table of contents", "toc", "содержание"):
-                in_toc = True
-                toc_level = level
-                continue
-            elif in_toc and level <= toc_level:
-                in_toc = False
-
-        if in_toc:
-            # Skip TOC entries (lines that look like links to anchors)
-            if _re.search(r"\]\(#", stripped) or _re.match(r"^\s*[\d\-\*]\.?\s+\[", stripped):
-                continue
-
         cleaned.append(line)
 
     text = "\n".join(cleaned)
@@ -280,9 +263,7 @@ def fb2_to_markdown(fb2_path: Path, output_path: Path):
     )
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Heading-aware chunking
-# ─────────────────────────────────────────────────────────────────────
 
 
 def parse_heading(line: str) -> tuple[int, str] | None:
@@ -431,19 +412,9 @@ def split_into_sections(text: str) -> list[dict]:
     return sections
 
 
-def chunk_section_text(section_text: str, chapter_only: bool = False) -> list[str]:
-    """Chunk a single section at paragraph boundaries; sentence boundaries
-    for enormous paragraphs (> SOFT_LIMIT).
-
-    If chapter_only=True: return the entire section as a single chunk,
-    regardless of size. Use when chapters are small enough to fit one
-    sub-agent context and you want maximum coherence within a chapter.
-    """
-    if chapter_only:
-        # One chunk per chapter — no splitting, even if very large.
-        stripped = section_text.strip()
-        return [stripped] if stripped else []
-
+def _split_by_size(section_text: str) -> list[str]:
+    """Chunk text at paragraph boundaries (sentence boundaries for huge
+    paragraphs > SOFT_LIMIT), greedily up to CHUNK_SIZE."""
     paragraphs = [p.strip() for p in re.split(r"\n\n+", section_text) if p.strip()]
     if not paragraphs:
         return []
@@ -477,6 +448,69 @@ def chunk_section_text(section_text: str, chapter_only: bool = False) -> list[st
     return chunks
 
 
+# A scene break is a standalone `***` line (translate/polish keeps `***`,
+# per translate_chunk.md rule 16). Used only as a preferred cut point.
+_SCENE_BREAK_RE = re.compile(r"^\s*\*{3,}\s*$")
+
+
+def _split_at_scene_breaks(section_text: str) -> list[str]:
+    """Split a chapter into scene parts at standalone `***` lines.
+
+    The break line stays with the part it closes so it is not lost.
+    """
+    paragraphs = [p.strip() for p in re.split(r"\n\n+", section_text) if p.strip()]
+    parts: list[str] = []
+    current = ""
+    for para in paragraphs:
+        current = (current + "\n\n" + para) if current else para
+        if _SCENE_BREAK_RE.match(para):
+            parts.append(current)
+            current = ""
+    if current.strip():
+        parts.append(current)
+    return parts
+
+
+def _merge_small_chunks(chunks: list[str], limit: int) -> list[str]:
+    """Greedily merge adjacent chunks while the joined size stays <= limit."""
+    merged: list[str] = []
+    current = ""
+    for chunk in chunks:
+        if not current:
+            current = chunk
+        elif len(current) + len(chunk) + 2 <= limit:
+            current = current + "\n\n" + chunk
+        else:
+            merged.append(current)
+            current = chunk
+    if current.strip():
+        merged.append(current)
+    return merged
+
+
+def chunk_section_text(section_text: str, chapter_only: bool = False) -> list[str]:
+    """Chunk a single section.
+
+    If chapter_only=True: keep the chapter as one chunk while it fits
+    CHUNK_SIZE. A longer chapter is cut at `***` scene breaks (or, if it
+    has none, by size) so a single chapter never overflows a sub-agent's
+    output limit. Consecutive scene parts are merged back while they fit.
+    """
+    stripped = section_text.strip()
+    if not stripped:
+        return []
+
+    if chapter_only:
+        if len(stripped) <= CHUNK_SIZE:
+            return [stripped]
+        pieces: list[str] = []
+        for part in _split_at_scene_breaks(stripped):
+            pieces.extend(_split_by_size(part))
+        return _merge_small_chunks(pieces, CHUNK_SIZE)
+
+    return _split_by_size(stripped)
+
+
 def split_into_chunks(
     md_path: Path,
     temp_dir: Path,
@@ -487,9 +521,9 @@ def split_into_chunks(
     """Split Markdown into chunks. Returns (paths, {chunk_id: section_title}).
 
     When respect_headings=True (default), never crosses H1/H2 boundary.
-    When chapter_only=True, each section becomes a single chunk (no
-    further splitting by size). Both can be combined: respect_headings
-    groups by chapter, chapter_only keeps each chapter intact.
+    When chapter_only=True, each section stays whole while it fits
+    CHUNK_SIZE; longer chapters are cut at `***` scene breaks (or by size
+    when there are none).
     """
     text = md_path.read_text(encoding="utf-8")
 
@@ -528,9 +562,7 @@ def split_into_chunks(
     return chunk_paths, section_for_chunk
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Metadata
-# ─────────────────────────────────────────────────────────────────────
 
 
 def extract_metadata_from_opf(epub_path: Path) -> dict:
@@ -641,13 +673,11 @@ def write_config(temp_dir: Path, metadata: dict, source_format: str):
         f.write("output_lang=ru\n")
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Safety: protect against accidental overwrite of an in-progress run
-# ─────────────────────────────────────────────────────────────────────
 
 
 def check_existing_outputs(temp_dir: Path) -> int:
-    return len(list(process_dir(temp_dir).glob("output_chunk*.md")))
+    return len(chunk_output_files(process_dir(temp_dir)))
 
 
 def check_fingerprint(temp_dir: Path, input_path: Path) -> tuple[str, str]:
@@ -680,9 +710,7 @@ def write_fingerprint(temp_dir: Path, input_path: Path, sha256: str):
     )
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Main
-# ─────────────────────────────────────────────────────────────────────
 
 
 def main():
@@ -806,7 +834,10 @@ def main():
     )
 
     if chapter_only:
-        sys.stderr.write("[convert] chapter-only mode: one chunk per chapter (no size-based splitting)\n")
+        sys.stderr.write(
+            "[convert] chapter-only mode: one chunk per chapter; chapters above "
+            f"{CHUNK_SIZE} chars are cut at *** scene breaks\n"
+        )
 
     # Sidecar: chunk -> section-title mapping for QA / debugging
     pdir = process_dir(temp_dir)

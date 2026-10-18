@@ -1,14 +1,14 @@
 # Схемы JSON-артефактов: `glossary.json` и `meta.json`
 
-Этот файл — **единственный источник истины** по схемам обоих JSON-артефактов
+Этот файл - **единственный источник истины** по схемам обоих JSON-артефактов
 пайплайна. Инструкции субагенту (и оркестратору), который записывает
-`glossary.json` или `meta.json`, берутся **отсюда** — не из памяти.
+`glossary.json` или `meta.json`, берутся **отсюда** - не из памяти.
 
 ---
 
 # Часть 1. Схема `glossary.json` (v2)
 
-`<temp_dir>/glossary.json` — human-facing файл: его правит пользователь,
+`<temp_dir>/glossary.json` - human-facing файл: его правит пользователь,
 дописывает `merge_meta.py`, читают `print-terms-for-chunk`, `run_state.py`
 и `pronoun_check.py`.
 
@@ -21,16 +21,16 @@
   "applied_meta_hashes": {},
   "terms": [
     {
-      "id": "sing_sing",
-      "source": "Sing Sing",
-      "target": "Синг-Синг",
-      "aliases": ["Sing"],
+      "id": "alicia_brown",
+      "source": "Alicia Brown",
+      "target": "Алисия Браун",
+      "aliases": ["Alicia"],
       "category": "person",
-      "gender": "male",
+      "gender": "female",
       "confidence": "high",
       "frequency": 0,
       "evidence_refs": [],
-      "notes": "антрополог, кузен рассказчика"
+      "notes": "проводник, спутница рассказчика"
     }
   ]
 }
@@ -40,18 +40,18 @@
 
 | Поле | Уровень | Обязательно | Что будет, если пропустить |
 |---|---|---|---|
-| `version` | top-level | **ДА, ровно `2`** | без него файл — не глоссарий v2; скрипты **останавливаются с ошибкой** |
-| `terms` | top-level | **ДА, массив** | то же — hard error |
+| `version` | top-level | **ДА, ровно `2`** | без него файл - не глоссарий v2; скрипты **останавливаются с ошибкой** |
+| `terms` | top-level | **ДА, массив** | то же - hard error |
 | `high_frequency_top_n` | top-level | нет (дефолт из `config.toml`) | подставится дефолт |
 | `applied_meta_hashes` | top-level | нет (создастся при merge) | создастся пустым |
-| `id` | term | **ДА** — но **генерируется скриптом** | `validate-glossary --fix` проставит; `run_state.py` использует id как ключ хешей |
+| `id` | term | **ДА** - но **генерируется скриптом** | `validate-glossary --fix` проставит; `run_state.py` использует id как ключ хешей |
 | `source` | term | **ДА** (английский оригинал) | error |
 | `target` | term | **ДА** (русский перевод) | error |
 | `aliases` | term | нет (`[]`) | warning |
 | `category` | term | нет (`person`/`place`/`org`/`term`/`other`) | warning |
 | `gender` | term | нет (`male`/`female`/`neutral`/`unknown`) | warning |
 | `confidence` | term | нет (`high`/`medium`/`low`) | warning |
-| `frequency` | term | нет — считается `count-frequencies` | warning |
+| `frequency` | term | нет - считается `count-frequencies` | warning |
 | `evidence_refs`, `notes` | term | нет | — |
 
 > **`confidence` и обратная связь пользователя.** Агенты добавляют
@@ -61,17 +61,17 @@
 > ручной правкой JSON:
 > ```bash
 > python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --all
-> python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --source "Brightsand"
-> python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --id brightsand
+> python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --source "Silverstone"
+> python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --id silverstone
 > ```
 > Команда пропускает уже подтверждённые (`high`) термины (кроме
 > `--force`) и не записывает файл, если ни один термин не выбран.
 
-> **`"version": 2` — самое частое место, где ломается глоссарий.**
-> Если ты (или субагент) пишешь `glossary.json` целиком — скопируй
+> **`"version": 2` - самое частое место, где ломается глоссарий.**
+> Если ты (или субагент) пишешь `glossary.json` целиком - скопируй
 > структуру из примера выше вместе с ключом `version`.
 
-## `id` генерируется автоматически — не придумывай его
+## `id` генерируется автоматически - не придумывай его
 
 `id` выводится из английского `source` детерминированно
 (`scripts/shared/common.py → make_term_id`): нижний регистр, апострофы
@@ -79,9 +79,9 @@
 
 | `source` | `id` |
 |---|---|
-| `Sing Sing` | `sing_sing` |
-| `Tracker's Lenses` | `trackers_lenses` |
-| `Order of the Broken Lens` | `order_of_the_broken_lens` |
+| `Alicia Brown` | `alicia_brown` |
+| `Silver Compasses` | `silver_compasses` |
+| `Order of the Silver Compass` | `order_of_the_silver_compass` |
 
 Коллизии получают суффикс `_2`, `_3`. Проставить недостающие id:
 
@@ -95,7 +95,7 @@ python3 {baseDir}/scripts/phase1_prepare/glossary.py validate-glossary "<temp_di
 
 ## Что НЕ должно попадать в глоссарий
 
-Глоссарий — про **повторяющуюся** терминологию, которую нужно держать
+Глоссарий - про **повторяющуюся** терминологию, которую нужно держать
 единой по всей книге. Одноразовое имя стоит перевести по месту, в тексте
 чанка, а не заносить в словарь.
 
@@ -105,7 +105,7 @@ python3 {baseDir}/scripts/phase1_prepare/glossary.py validate-glossary "<temp_di
 - реальных людей и компании, упомянутые один раз (Tor Books, Amazon,
   Kickstarter, имена реальных писателей в эпиграфе-цитате);
 - названия книг, серий, цитаты, продуктовые описания
-  (`"Blenderbuss 3000 Exploding Edition"`);
+  (`"Device 3000 Exploding Edition"`);
 - эпизодических персонажей и локации, встречающиеся ровно один раз, если
   их перевод очевиден и не влияет на согласованность;
 - служебные строки вёрстки («Contents», «Copyright», «About the Author»).
@@ -115,30 +115,30 @@ python3 {baseDir}/scripts/phase1_prepare/glossary.py validate-glossary "<temp_di
 
 Практический критерий: `frequency` ≥ 2 (термин встречается минимум в двух
 чанках) **или** термин важен для сюжета/серии. `validate-glossary`
-отдельно подсвечивает термины с `frequency` 0 и 1 — это кандидаты на
+отдельно подсвечивает термины с `frequency` 0 и 1 - это кандидаты на
 удаление.
 
 ## Протокол записи `glossary.json` (обязателен)
 
 1. **Никогда** не правь `glossary.json` строковой подстановкой
    (`str.replace`, sed, ручной edit фрагмента). Только
-   `json.loads` → правка → `json.dumps`; готовый шаблон —
+   `json.loads` → правка → `json.dumps`; готовый шаблон -
    `scripts/shared/edit_glossary_template.py`.
-2. **После любой записи** (особенно если писал субагент) — прогони шлюз:
+2. **После любой записи** (особенно если писал субагент) - прогони шлюз:
    ```bash
    python3 {baseDir}/scripts/phase1_prepare/glossary.py validate-glossary "<temp_dir>"
    ```
    Только после `GLOSSARY OK` запускай `count-frequencies` и переходи
    дальше.
-3. **Отчёт субагента — не доказательство.** «Записал 78 терминов и
+3. **Отчёт субагента - не доказательство.** «Записал 78 терминов и
    проверил» ничего не значит, пока `validate-glossary` не подтвердил это
    на диске. Проверяй сам.
 
 ---
 
-# Часть 2. Схема meta.json (v2) — детальная справка
+# Часть 2. Схема meta.json (v2) - детальная справка
 
-`output_chunkNNNN.meta.json` — наблюдения субагента-переводчика. Этот
+`output_chunkNNNN.meta.json` - наблюдения субагента-переводчика. Этот
 файл **обязателен** (даже если пустой по содержимому), его наличие
 трекается в `applied_meta_hashes`. Схема v2:
 
@@ -157,7 +157,7 @@ python3 {baseDir}/scripts/phase1_prepare/glossary.py validate-glossary "<temp_di
      "confidence": "high", "evidence": "≤200 chars"}
   ],
   "narrator_identification": {
-    "name": "Kaladin|Shallan|Dalinar|Wit|unknown|omniscient|dialogue_only|multiple",
+    "name": "<имя рассказчика из голос_книги>|unknown|omniscient|dialogue_only|multiple",
     "confidence": "high|medium|low",
     "evidence": "≤300 chars обоснование",
     "gender_of_narrator": "male|female|neutral|unknown",
@@ -180,7 +180,7 @@ python3 {baseDir}/scripts/phase1_prepare/glossary.py validate-glossary "<temp_di
 
 ---
 
-## Имена полей — критично
+## Имена полей - критично
 
 | Поле в meta.json | Тип | Назначение |
 |---|---|---|
@@ -190,52 +190,52 @@ python3 {baseDir}/scripts/phase1_prepare/glossary.py validate-glossary "<temp_di
 
 **Критично:** в `new_entities` поле называется **`target_proposal`** (с суффиксом
 `_proposal`), а НЕ `target`. В глоссарии (после merge) оно станет `target`, но
-в meta.json — именно `target_proposal`. Это разные имена для одного поля в
-режиме записи (sub-agent) и чтения (merge) — не путай.
+в meta.json - именно `target_proposal`. Это разные имена для одного поля в
+режиме записи (sub-agent) и чтения (merge) - не путай.
 
-Если записать `target` вместо `target_proposal` — `merge_meta.py` пометит
+Если записать `target` вместо `target_proposal` - `merge_meta.py` пометит
 meta как malformed (missing `target_proposal`) и observations будут потеряны.
 
 ---
 
-## Валидация meta.json — что считается malformed
+## Валидация meta.json - что считается malformed
 
 ### 1. Не указывай `chunk_id` в meta.json
 
-`chunk_id` выводится из имени файла. Указание `chunk_id` в payload —
+`chunk_id` выводится из имени файла. Указание `chunk_id` в payload -
 валидационная ошибка, meta будет quarantined как malformed.
 
 ### 2. Не выдумывай сущности для «галочки»
 
-Пустой meta (все массивы пусты) — валидный вывод. Не добавляй сущности,
+Пустой meta (все массивы пусты) - валидный вывод. Не добавляй сущности,
 алиасы, гипотезы, если нет реальных наблюдений.
 
-### 3. `new_entities.source` — правила валидации
+### 3. `new_entities.source` - правила валидации
 
 `merge_meta.py` валидирует source через regex `^[A-Za-z][A-Za-z\s'\-]*$`:
-- **Только ASCII-буквы** (A-Z, a-z). **Цифры запрещены** — поэтому
-  `"Blenderbuss 3000 Exploding Edition"` отбрасывается (из-за `3000`).
-- Пробелы, апострофы (`'`), дефисы (`-`) **разрешены** — для multi-word
-  имён собственных (`"Tracker's Lenses"`, `"Dark Talent"`, `"Sing-Sing"`).
-- Non-ASCII (кириллица, акценты) **запрещён** — галлюцинация субагента.
+- **Только ASCII-буквы** (A-Z, a-z). **Цифры запрещены** - поэтому
+  `"Device 3000 Exploding Edition"` отбрасывается (из-за `3000`).
+- Пробелы, апострофы (`'`), дефисы (`-`) **разрешены** - для multi-word
+  имён собственных (`"Silver Compass"`, `"Grey Gift"`, `"Brown-Baker"`).
+- Non-ASCII (кириллица, акценты) **запрещён** - галлюцинация субагента.
 
 **Правила для source:**
 - **Не используй source с цифрами.** Если термин содержит цифру
-  (`"Blenderbuss 3000"`) — выбери ключевое слово без цифры
-  (`"Blenderbuss"`), а полную форму и описание — в `evidence`.
+  (`"Device 3000"`) - выбери ключевое слово без цифры
+  (`"Device"`), а полную форму и описание - в `evidence`.
 - **Не используй названия книг, цитаты или продуктовые описания** как
-  `source`. `"Alcatraz vs. the Evil Librarians"` → отброшен. Название
-  книги — не термин глоссария.
+  `source`. `"A Novel vs. the Grey Order"` → отброшен. Название
+  книги - не термин глоссария.
 - **Multi-word source допустим** только если это **устоявшееся имя
   собственное** (артефакт, место, организация):
-  - OK: `"Tracker's Lenses"`, `"Order of the Broken Lens"`, `"Dark Talent"`
-  - НЕ OK: `"Blenderbuss 3000 Exploding Edition"` (продуктовое описание),
-    `"the evil librarians who stole the book"` (описание, не имя)
-- **Если сомневаешься** — выбери короткое ключевое слово.
+  - OK: `"Silver Compass"`, `"Order of the Silver Compass"`, `"Grey Gift"`
+  - НЕ OK: `"Device 3000 Exploding Edition"` (продуктовое описание),
+    `"the grey agents who stole the book"` (описание, не имя)
+- **Если сомневаешься** - выбери короткое ключевое слово.
 
-### 3a. Не предлагай одноразовые имена (КРИТИЧНО)
+### 3a. Не предлагай одноразовые имена
 
-`new_entities` — это **кандидаты в глоссарий**, а глоссарий нужен только
+`new_entities` - это **кандидаты в глоссарий**, а глоссарий нужен только
 для терминологии, которая повторяется по книге. Не предлагай:
 
 - имена из благодарностей, посвящения, вступления/послесловия автора
@@ -246,93 +246,93 @@ meta как malformed (missing `target_proposal`) и observations будут п�
   перевод очевиден.
 
 Такие имена переводи **по месту, в тексте чанка**, и не упоминай в
-`new_entities`. Если чанк целиком — благодарности, посвящение,
-copyright или «об авторе», то нормальный `meta.json` для него —
+`new_entities`. Если чанк целиком - благодарности, посвящение,
+copyright или «об авторе», то нормальный `meta.json` для него -
 **пустой** (все массивы пусты).
 
 Проверочный вопрос перед добавлением: «встретится ли этот термин ещё в
 других главах, и испортит ли разнобой перевода читательский опыт?»
-Если нет — не добавляй.
+Если нет - не добавляй.
 
-### 3b. Имена персонажей: краткая vs полная форма (КРИТИЧНО)
+### 3b. Имена персонажей: краткая vs полная форма
 
 `glossary.py print-terms-for-chunk` сравнивает по surface-формам (source
-+ aliases). Если в чанке встречается только **имя** («Attica», «Sing»),
-а в глоссарии лежит **полное имя** («Attica Smedry», «Sing Sing»),
-surface-форма НЕ совпадёт → термин не попадёт в таблицу → субагент
-честно предложит «Attica» как new_entity → **дубликат**.
++ aliases). Если в чанке встречается только **имя** («Alicia»), а в
+глоссарии лежит **полное имя** («Alicia Brown»), surface-форма НЕ
+совпадёт → термин не попадёт в таблицу → субагент честно предложит
+«Alicia» как new_entity → **дубликат**.
 
-**Реальный кейс (Bastille vs. the Evil Librarians):**
 | Уже в глоссарии (high) | Предложено субагентом (low) | Перевод совпадает? |
 |---|---|---|
-| `Attica Smedry` → «Аттика Смедри» | `Attica` → «Аттика» | ✅ (корень) |
-| `Sing Sing` → «Синг-Синг» | `Sing` → «Син» | ❌ **НЕТ** |
-| `Sing Sing` → «Синг-Синг» | `Sing Smedry` → «Синг Смедри» | ❌ **НЕТ** |
+| `Alicia Brown` → «Алисия Браун» | `Alicia` → «Алисия» | ✅ (корень) |
+| `Alicia Brown` → «Алисия Браун» | `Brown` → «Коричневая» | ❌ нет |
 
-Результат: персонаж Sing переведён 3 разными способами в разных главах.
-
-**Правила для субагента (см. translate_chunk.md, секция "Имена персонажей"):**
+**Правила для субагента (см. translate_chunk.md, секция «Имена персонажей»):**
 1. Если видишь краткое имя, а в терм-таблице есть полное (отличается
-   только фамилией) — **НЕ добавляй как new_entity**. Используй target
-   из полной записи, или предложи краткую форму как `alias_hypothesis`:
-   `{"variant": "Attica", "may_be_alias_of_source": "Attica Smedry", "evidence": "..."}`.
-2. **Исключение:** если краткая форма — это ДРУГОЙ персонаж, добавляй
+   только фамилией) - **НЕ добавляй как new_entity**. Используй target
+   из полной записи или предложи краткую форму как `alias_hypothesis`:
+   `{"variant": "Alicia", "may_be_alias_of_source": "Alicia Brown", "evidence": "..."}`.
+2. **Исключение:** если краткая форма - это другой персонаж, добавляй
    как new_entity, но в `evidence` укажи, чем он отличается от
    полного имени в глоссарии.
+
+`merge_meta.py` и `find-duplicates` ловят близкие дубликаты постфактум,
+поэтому в промпте переводчика это правило короткое, а надёжная
+самопроверка - `check_metas.py --file` перед сдачей чанка.
 
 **Рекомендация для оркестратора (при сборке глоссария на шаге 3):**
 Предпочитайте **отдельные термины для имени и фамилии**, а не одно
 полное имя. Это позволяет:
-- Переводить «Sing» и «Smedry» независимо (как они встречаются в тексте)
+- Переводить «Alicia» и «Brown» независимо (как они встречаются в тексте)
 - Избегать дубликатов, когда субагент видит только краткую форму
-- Сохранять консистентность: «Sing» всегда → «Син», «Smedry» всегда → «Смедри»
+- Сохранять консистентность: «Alicia» всегда → «Алисия», «Brown» всегда → «Браун»
 
-Пример (`id` проставит `validate-glossary --fix` — вручную не пиши):
+Пример (`id` проставит `validate-glossary --fix` - вручную не пиши):
 ```json
-{"id": "sing", "source": "Sing", "target": "Син", "aliases": [], "category": "person",
- "notes": "first name; see also 'Smedry' (family name)"},
-{"id": "smedry", "source": "Smedry", "target": "Смедри", "aliases": [], "category": "person",
- "notes": "family name; appears as 'X Smedry' in text, see also separate terms for each family member"}
+{"id": "alicia", "source": "Alicia", "target": "Алисия", "aliases": [], "category": "person",
+ "notes": "first name; see also 'Brown' (family name)"},
+{"id": "brown", "source": "Brown", "target": "Браун", "aliases": [], "category": "person",
+ "notes": "family name; appears as 'X Brown' in text, see also separate terms for each family member"}
 ```
 
-Если встречается «Sing Smedry» — это составная форма, переводится как
-«Син Смедри» из двух отдельных терминов.
+Если встречается «Alicia Brown» - это составная форма, переводится как
+«Алисия Браун» из двух отдельных терминов.
 
 **Альтернатива (если пользователь предпочитает полные имена):**
 Одна запись с aliases:
 ```json
-{"id": "sing_sing", "source": "Sing Sing", "target": "Син-Син",
- "aliases": ["Sing", "SingSmedry", "Sing Smedry"], "category": "person"}
+{"id": "alicia_brown", "source": "Alicia Brown", "target": "Алисия Браун",
+ "aliases": ["Alicia"], "category": "person"}
 ```
 Но тогда `print-terms-for-chunk` найдёт термин только если в чанке
 встретится одна из surface-форм (включая aliases).
 
-### 4. Все строки в meta.json — валидный JSON
+### 4. Все строки в meta.json - валидный JSON
 
 Это означает:
 - **Не используй неэкранированные `"` внутри строк.** Если нужна кавычка
-  внутри `evidence` или `voice_markers` — используй русские ёлочки
+  внутри `evidence` или `voice_markers` - используй русские ёлочки
   «...» или экранируй как `\"`. Например:
-  - `"voice_markers": ["обращение «вы» к читателю"]` — правильно;
-  - `["вы" к читателю]` — сломает JSON.
-- **Не вставляй сырые переводы строк** внутри строковых значений —
+  - `"voice_markers": ["обращение «вы» к читателю"]` - правильно;
+  - `["вы" к читателю]` - сломает JSON.
+- **Не вставляй сырые переводы строк** внутри строковых значений -
   используй `\n` или сокращай.
-- **Если сомневаешься, что JSON валиден** — лучше выдай пустой meta
+- **Если сомневаешься, что JSON валиден** - лучше выдай пустой meta
   (`{"new_entities": [], "alias_hypotheses": [], ...}`), чем сломанный.
 
-### 5. `narrator_identification` — твоё решение, не скрипта
+### 5. `narrator_identification` - твоё решение, не скрипта
 
-Если в чанке один очевидный POV — `confidence: high`. Если стык или
-неясно — `medium`/`low`. Не «угадывай» по одной фразе.
+Если в чанке один очевидный POV - `confidence: high`. Если стык или
+неясно - `medium`/`low`. Не «угадывай» по одной фразе.
 
-### 6. `epigraph_translation` — только если в чанке есть эпиграф
+### 6. `epigraph_translation` - только если в чанке есть эпиграф
 
 Заполняется только если в чанке есть эпиграф (см. `structural_units.json`).
 Иначе поле опускается.
 
-### 7. Если терм-таблица пуста — правило 2 (translate_chunk.md) не добавлять
+### 7. Если терм-таблица пуста - правило 2 (translate_chunk.md) не добавлять
 
-### 8. Если neighbour context пуст — правило 3 пропустить
+### 8. Если neighbour context пуст - правило 3 пропустить
 
 ---
 
@@ -340,7 +340,7 @@ surface-форма НЕ совпадёт → термин не попадёт в
 
 После завершения каждого батча перевода, перед merge (шаг 6), рекомендуется
 прогнать быструю проверку всех meta-файлов на валидность JSON. Если meta
-malformed — merge_meta.py quarantines её, но лучше поймать это раньше и
+malformed - merge_meta.py quarantines её, но лучше поймать это раньше и
 попросить субагента пере-создать meta.
 
 **Штатный скрипт:**
@@ -351,14 +351,14 @@ python3 {baseDir}/scripts/shared/check_metas.py "<temp_dir>"
 Проверяет все `output_chunk*.meta.json` на валидность JSON, печатает
 имена и ошибки malformed-файлов.
 
-Если найдены malformed metas — у субагента есть 2 пути:
+Если найдены malformed metas - у субагента есть 2 пути:
 1. Попросить субагента пере-создать meta.json (с явной инструкцией про
    валидный JSON и экранирование кавычек).
-2. Исправить вручную (если ошибка простая — например, замена `"` на `«...»`
+2. Исправить вручную (если ошибка простая - например, замена `"` на `«...»`
    внутри `voice_markers`).
 
 ---
 
 > **Сигнал проблемы:** если субагент упорно предлагает source с цифрами
-> или продуктовым описанием — это признак, что термин не глоссарийный.
+> или продуктовым описанием - это признак, что термин не глоссарийный.
 > Удали запись из meta.json и инлайнь перевод в текст чанка.

@@ -15,68 +15,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import process_dir, run_cmd
-
-
-def strip_toc_sections(text: str) -> str:
-    """Remove table-of-contents sections from merged markdown.
-
-    FB2 readers auto-generate TOC from chapter headings. A manually-included
-    TOC section (often inherited from the source EPUB) is redundant.
-    """
-    import re
-
-    toc_heading_re = re.compile(
-        r"^(#{1,3})\s+"
-        r"(СОДЕРЖАНИЕ|Содержание|Contents|Table of Contents|TOC|Оглавление|ОГЛАВЛЕНИЕ)"
-        r"\s*$",
-        re.MULTILINE,
-    )
-
-    lines = text.split("\n")
-    result: list[str] = []
-    skip_until_level = None
-
-    for i, line in enumerate(lines):
-        if skip_until_level is not None:
-            m = re.match(r"^(#{1,6})\s+", line)
-            if m:
-                this_level = len(m.group(1))
-                if this_level <= skip_until_level:
-                    skip_until_level = None
-                    result.append(line)
-                    continue
-            continue
-
-        m = toc_heading_re.match(line)
-        if m:
-            heading_level = len(m.group(1))
-            j = i + 1
-            while j < len(lines) and not lines[j].strip():
-                j += 1
-            if j < len(lines):
-                next_line = lines[j]
-                is_toc_entry = bool(
-                    re.search(r"\[#?[\w\-]+\]", next_line)
-                    or re.search(r"\]\(#", next_line)
-                    or re.match(r"^\s*[\d\-\*]\.?\s+\[", next_line)
-                    or re.match(r'^\s*<a\s+href="#', next_line)
-                )
-                if is_toc_entry:
-                    skip_until_level = heading_level
-                    continue
-            result.append(line)
-        else:
-            result.append(line)
-
-    return "\n".join(result)
+from common import chunk_output_files, process_dir, run_cmd, strip_toc_block
 
 
 def merge_chunks(temp_dir: Path) -> tuple[str, list[str]]:
     """Merge all output_chunk*.md -> single string."""
     pdir = process_dir(temp_dir)
-    chunk_files = sorted(pdir.glob("output_chunk*.md"))
-    chunk_files = [f for f in chunk_files if not f.name.endswith((".bak", ".tmp"))]
+    chunk_files = chunk_output_files(pdir)
     if not chunk_files:
         print("ERROR: No output chunks found", file=sys.stderr)
         sys.exit(1)
@@ -91,7 +36,7 @@ def merge_chunks(temp_dir: Path) -> tuple[str, list[str]]:
         parts.append(text)
 
     merged = "\n\n".join(parts)
-    merged = strip_toc_sections(merged)
+    merged = strip_toc_block(merged)
     output_path = temp_dir / "output.md"
     from config import atomic_write_text
 

@@ -8,16 +8,21 @@ Run AFTER step 8 (polish) and BEFORE step 9 (build).
 
 Usage:
     python3 quality_check.py <temp_dir> [--strict]
+    python3 quality_check.py <temp_dir> --chunk chunkNNNN [chunkNNNN ...]
+        Per-chunk early checks (run right after each chunk is translated
+        in step 5): mixed alphabets, English dialogue quotes, untranslated
+        headings. Findings are tied to a chunk id for a targeted retry.
 
 Exit codes:
     0 — no issues (or only warnings without --strict)
     1 — issues found (or any warnings with --strict)
-    2 — temp_dir not valid (no output.md)
+    2 — temp_dir not valid (no output.md / no chunk output found)
 
 Checks performed on output.md:
     1. Orphan footnote markers: [^N] without a matching [^N]: definition
     2. Long English leaks: ASCII runs > EN_LEAK_CHARS chars
-    3. Per-chapter ratio outliers (uses chunk_sections.json if present)
+    3. Per-section ratio outliers (source sizes from manifest.json,
+       output sizes from output_chunkNNNN.md)
     4. Garbage em-dash sequences: "— — —", "---", "— —", "—–—"
     5. JSON/JS leakage artifacts: "[object Object]", "[undefined]",
        "undefined", "null" (as standalone word)
@@ -30,8 +35,13 @@ Checks performed on output.md:
        quotes wrap dialogue (should be — ... — X in Russian)
    11. Words mixing Cyrillic and Latin letters ('dошло', 'Gород') — a
        two-alphabet keyboard slip no LLM pass can see; logged, never fixed
+    12. Spaced hyphen where an em-dash belongs: "Москва - столица"
+    13. MT word order in dates and years: "марта 5-го", "в году 2025"
+    14. Clear paired-spelling slips: "в течении часа", "иметь ввиду",
+        "в отличии от"
 """
 
+import argparse
 import json
 import re
 import sys
@@ -47,9 +57,7 @@ RATIO_MIN = _cfg.get("quality", "ratio_min", 0.6)
 RATIO_MAX = _cfg.get("quality", "ratio_max", 2.0)
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Individual checks. Each returns list of (line_num, issue_str) tuples.
-# ─────────────────────────────────────────────────────────────────────
 
 
 def check_orphan_footnotes(text: str) -> list[tuple[int, str]]:
@@ -313,63 +321,102 @@ def check_untranslated_chapter_headings(text: str) -> list[tuple[int, str]]:
     return issues
 
 
-def check_per_chapter_ratio(temp_dir: Path, output_text: str) -> list[tuple[int, str]]:
-    """If chunk_sections.json exists, check per-chapter ratio.
+_RU_MONTHS = (
+    "январ|феврал|март|апрел|ма|июн|июл|август|сентябр|октябр|ноябр|декабр"
+)
 
-    Splits output_text by H1/H2 headings and compares each section's
-    length to the corresponding source section length.
+# Words that make "в течении" a duration (→ "в течение"), not a river flow.
+_DURATION_WORDS = (
+    "часа|дня|года|недели|месяца|минуты|суток|"
+    "часов|дней|лет|недель|месяцев|минут"
+)
+
+
+def check_dash_hyphen(text: str) -> list[tuple[int, str]]:
+    """Spaced hyphen used where a Russian em-dash belongs.
+
+    'Москва - столица' must be 'Москва — столица'. Numeric ranges
+    ('10 - 20') are skipped here — they belong to the short dash.
     """
     issues = []
-    sections_path = process_dir(temp_dir) / "chunk_sections.json"
-    if not sections_path.exists():
-        return issues
+    for m in re.finditer(r"(?<=\S) - (?=\S)", text):
+        left = text[m.start() - 1]
+        right = text[m.end()]
+        if left.isdigit() and right.isdigit():
+            continue
+        line = text[: m.start()].count("\n") + 1
+        issues.append((line, f"DASH_HYPHEN: '{m.group(0)}' (should be '—')"))
+    return issues
 
-    try:
-        sections = json.loads(sections_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return issues
 
-    # Group chunks by section_title
-    section_to_chunks: dict[str, list[str]] = {}
-    for chunk_id, title in sections.items():
-        section_to_chunks.setdefault(title, []).append(chunk_id)
+def check_dates_numerals(text: str) -> list[tuple[int, str]]:
+    """MT word order in dates and years (see grammar category 17)."""
+    issues = []
+    patterns = [
+        (re.compile(rf"\b(?:{_RU_MONTHS})\w*\s+\d{{1,2}}\b", re.IGNORECASE), "DATE_ORDER"),
+        (re.compile(r"\bгоду\s+\d{4}\b", re.IGNORECASE), "YEAR_ORDER"),
+    ]
+    for pat, name in patterns:
+        for m in pat.finditer(text):
+            line = text[: m.start()].count("\n") + 1
+            issues.append((line, f"{name}: '{m.group(0)}'"))
+    return issues
 
-    # For each section, sum source chunk sizes from manifest
+
+def check_paired_spellings(text: str) -> list[tuple[int, str]]:
+    """Clear-cut paired-spelling slips (see grammar category 18)."""
+    issues = []
+    patterns = [
+        (re.compile(rf"\bв течении\s+(?:{_DURATION_WORDS})\b", re.IGNORECASE),
+         "PAIRED_SPELLING", "'в течении' → 'в течение'"),
+        (re.compile(r"\bиме\w+\s+ввиду\b", re.IGNORECASE),
+         "PAIRED_SPELLING", "'иметь ввиду' → 'иметь в виду'"),
+        (re.compile(r"\bв отличии от\b", re.IGNORECASE),
+         "PAIRED_SPELLING", "'в отличии от' → 'в отличие от'"),
+    ]
+    for pat, name, hint in patterns:
+        for m in pat.finditer(text):
+            line = text[: m.start()].count("\n") + 1
+            issues.append((line, f"{name}: '{m.group(0)}' ({hint})"))
+    return issues
+
+
+def check_per_chapter_ratio(temp_dir: Path) -> list[tuple[int, str]]:
+    """Per-section ratio, computed from the per-chunk outputs.
+
+    The glued output.md carries RUSSIAN headings while manifest.json keeps
+    the ENGLISH section titles, so matching by heading text silently found
+    nothing and a chapter truncated to 5% passed. Here we sum the manifest
+    source sizes and the real `output_chunkNNNN.md` sizes per section_title
+    — no heading matching involved.
+    """
+    issues = []
     manifest_path = process_dir(temp_dir) / "manifest.json"
     if not manifest_path.exists():
         return issues
+
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return issues
 
-    # Find section in output_text by heading match
-    heading_lines = {}
-    for m in re.finditer(r"^(#{1,2})\s+(.+?)\s*$", output_text, re.MULTILINE):
-        heading_lines[m.group(2).strip()] = m.start()
-
-    for title, chunk_ids in section_to_chunks.items():
-        # Skip empty / front matter
-        if not title or title == "(front matter)":
+    section_src: dict[str, int] = {}
+    section_out: dict[str, int] = {}
+    for chunk_id, info in manifest.get("chunks", {}).items():
+        title = info.get("section_title") or "(front matter)"
+        if title == "(front matter)":
             continue
-        src_size = sum(manifest.get("chunks", {}).get(cid, {}).get("size", 0) for cid in chunk_ids)
+        out_path = process_dir(temp_dir) / f"output_{chunk_id}.md"
+        if not out_path.exists():
+            continue
+        src_size = info.get("size", 0)
         if src_size == 0:
             continue
-        # Find corresponding heading in output
-        matched_start = None
-        for h_title, h_start in heading_lines.items():
-            if h_title == title or title in h_title or h_title in title:
-                matched_start = h_start
-                break
-        if matched_start is None:
-            continue
-        # Find next heading after matched_start
-        next_heading = None
-        for m in re.finditer(r"^#{1,2}\s+", output_text[matched_start + 1 :], re.MULTILINE):
-            next_heading = matched_start + 1 + m.start()
-            break
-        section_text = output_text[matched_start:next_heading] if next_heading else output_text[matched_start:]
-        out_size = len(section_text.strip())
+        section_src[title] = section_src.get(title, 0) + src_size
+        section_out[title] = section_out.get(title, 0) + len(out_path.read_text(encoding="utf-8").strip())
+
+    for title, src_size in section_src.items():
+        out_size = section_out.get(title, 0)
         if out_size == 0:
             continue
         ratio = out_size / src_size
@@ -391,18 +438,94 @@ def check_per_chapter_ratio(temp_dir: Path, output_text: str) -> list[tuple[int,
     return issues
 
 
-# ─────────────────────────────────────────────────────────────────────
+# Per-chunk early checks (step 5, right after each chunk is translated)
+#
+# Deterministic slips that used to be caught only on the glued output.md
+# at step 8.6. Running them per chunk ties every finding to a chunk id,
+# so a retry gets an exact problem list.
+
+
+_PER_CHUNK_CHECKS = (
+    ("mixed_alphabets", check_mixed_alphabets),
+    ("english_dialogue_quotes", check_english_dialogue_quotes),
+    ("untranslated_chapter_headings", check_untranslated_chapter_headings),
+    ("dash_hyphen", check_dash_hyphen),
+    ("dates_numerals", check_dates_numerals),
+    ("paired_spellings", check_paired_spellings),
+)
+
+
+def run_chunk_checks(temp_dir: Path, chunk_ids: list[str]) -> int:
+    """Run the per-chunk early checks on output_chunkNNNN.md files.
+
+    Returns 0 when clean, 1 when any issue is found, 2 when no output
+    file was found at all.
+    """
+    pdir = process_dir(temp_dir)
+    any_file = False
+    total = 0
+    for raw in chunk_ids:
+        cid = raw if raw.startswith("chunk") else f"chunk{raw}"
+        out_path = pdir / f"output_{cid}.md"
+        if not out_path.exists():
+            print(f"ERROR: {out_path.name} not found", file=sys.stderr)
+            continue
+        any_file = True
+        text = out_path.read_text(encoding="utf-8")
+        chunk_issues: list[tuple[str, str]] = []
+        for name, fn in _PER_CHUNK_CHECKS:
+            if name == "mixed_alphabets":
+                found = fn(text, temp_dir)
+            else:
+                found = fn(text)
+            for _line, msg in found:
+                chunk_issues.append((name, msg))
+        total += len(chunk_issues)
+        if chunk_issues:
+            print(f"{cid}: {len(chunk_issues)} issue(s)")
+            for name, msg in chunk_issues:
+                print(f"  [{name}] {msg}")
+        else:
+            print(f"{cid}: OK")
+
+    if not any_file:
+        return 2
+    if total:
+        print(f"\nEARLY CHECK FAILED: {total} issue(s) across {len(chunk_ids)} chunk(s).")
+        return 1
+    print(f"\nEARLY CHECK OK: {len(chunk_ids)} chunk(s) clean.")
+    return 0
+
+
 # Main
-# ─────────────────────────────────────────────────────────────────────
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="quality_check.py",
+        description="Structural quality checks on output.md or on single chunks.",
+    )
+    parser.add_argument("temp_dir")
+    parser.add_argument("--strict", action="store_true", help="fail on warnings too")
+    parser.add_argument(
+        "--chunk",
+        nargs="+",
+        metavar="chunkNNNN",
+        help="run only the per-chunk early checks on these chunks "
+        "(mixed alphabets, English dialogue quotes, untranslated headings, "
+        "dash/hyphen, dates/numerals, paired spellings)",
+    )
+    return parser
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
+    args = build_parser().parse_args()
+    temp_dir = Path(args.temp_dir)
 
-    temp_dir = Path(sys.argv[1])
-    strict = "--strict" in sys.argv
+    if args.chunk:
+        sys.exit(run_chunk_checks(temp_dir, args.chunk))
+
+    strict = args.strict
 
     output_path = temp_dir / "output.md"
     if not output_path.exists():
@@ -425,7 +548,10 @@ def main():
         ("leftover_placeholders", check_leftover_placeholders(text)),
         ("english_dialogue_quotes", check_english_dialogue_quotes(text)),
         ("untranslated_chapter_headings", check_untranslated_chapter_headings(text)),
-        ("per_chapter_ratio", check_per_chapter_ratio(temp_dir, text)),
+        ("dash_hyphen", check_dash_hyphen(text)),
+        ("dates_numerals", check_dates_numerals(text)),
+        ("paired_spellings", check_paired_spellings(text)),
+        ("per_chapter_ratio", check_per_chapter_ratio(temp_dir)),
     ]
 
     for name, issues in checks:

@@ -135,13 +135,13 @@ python3 {baseDir}/scripts/shared/load_state.py "<temp_dir>"
 
 Субагенты предлагают новые термины в `meta.json`. `merge_meta.py` мержит их транзакционно: либо применяются все изменения, либо ни одного. `find-duplicates` ловит близкие дубликаты, которые пропустил точный матч: единственное и множественное число, краткие и полные имена, пересечения алиасов. После каждого батча новые термины уходят на проверку пользователю.
 
-`glossary.json` защищён от разрушающих записей: поле `version: 2` обязательно, скрипты не подменяют повреждённый глоссарий пустым дефолтом и не пишут пустой список терминов поверх непустого. `validate-glossary [--fix]` обязателен после каждой записи. Поле `id` генерируется из английского названия автоматически: `Tracker's Lenses` становится `trackers_lenses`.
+`glossary.json` защищён от разрушающих записей: поле `version: 2` обязательно, скрипты не подменяют повреждённый глоссарий пустым дефолтом и не пишут пустой список терминов поверх непустого. `validate-glossary [--fix]` обязателен после каждой записи. Поле `id` генерируется из английского названия автоматически: `Silver Compasses` становится `silver_compasses`.
 
 Субагенты добавляют термины с `confidence: "low"`. Пользователь подтверждает вариант командой `confirm-terms`:
 
 ```bash
 python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --all
-python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --source "Brightsand"
+python3 {baseDir}/scripts/phase1_prepare/glossary.py confirm-terms "<temp_dir>" --source "Silverstone"
 ```
 
 `--all` берёт все новые термины, `--source` и `--id` точечно. Команда поднимает уверенность до `high`, дописывает `notes: "confirmed by user"` и не трогает уже подтверждённые.

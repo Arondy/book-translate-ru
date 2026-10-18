@@ -78,11 +78,10 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "shared"))
 sys.path.insert(0, str(_HERE))
 
-from common import process_dir
+from common import chunk_output_files, process_dir
 
-# ─────────────────────────────────────────────────────────────────────
 # Default exclude set (publisher front/back matter)
-# ─────────────────────────────────────────────────────────────────────
+
 
 # Stems of XHTML files to SKIP entirely (publisher boilerplate).
 # Customize via --exclude-file if your book has different names.
@@ -104,9 +103,7 @@ DEFAULT_EXCLUDE = {
 }
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Title derivation from XHTML basename
-# ─────────────────────────────────────────────────────────────────────
 
 
 def derive_title_from_basename(basename: str) -> str:
@@ -145,9 +142,7 @@ def derive_title_from_basename(basename: str) -> str:
     return basename.replace("_", " ").title()
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Markdown cleanup
-# ─────────────────────────────────────────────────────────────────────
 
 
 def clean_md(text: str, clean_title: str | None) -> str:
@@ -272,9 +267,7 @@ def clean_md(text: str, clean_title: str | None) -> str:
     return "\n".join(merged)
 
 
-# ─────────────────────────────────────────────────────────────────────
 # EPUB reading
-# ─────────────────────────────────────────────────────────────────────
 
 
 def read_opf_spine(epub_path: Path, extract_dir: Path) -> tuple[list[str], dict[str, str], Path]:
@@ -329,9 +322,7 @@ def pandoc_html_to_markdown(xhtml_path: Path) -> str:
     return result.stdout
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Main
-# ─────────────────────────────────────────────────────────────────────
 
 
 def main():
@@ -401,7 +392,7 @@ def main():
     pdir = process_dir(temp_dir)
 
     # Safety gate: refuse if outputs already exist (unless --force)
-    existing_outputs = list(pdir.glob("output_chunk*.md"))
+    existing_outputs = chunk_output_files(pdir)
     if existing_outputs and not force:
         sys.stderr.write(
             f"[convert_per_file] ERROR: temp dir already contains "

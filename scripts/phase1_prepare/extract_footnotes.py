@@ -54,9 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 
 from common import process_dir
 
-# ─────────────────────────────────────────────────────────────────────
 # Footnote body extraction from XHTML
-# ─────────────────────────────────────────────────────────────────────
 
 
 # Pattern for <li epub:type="footnote" id="...">...</li>
@@ -168,9 +166,7 @@ def find_all_footnote_bodies(extract_dir: Path) -> dict[str, str]:
     return all_bodies
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Anchor patterns in pandoc-emitted Markdown
-# ─────────────────────────────────────────────────────────────────────
 
 
 # Pandoc emits EPUB footnote anchors in several formats depending on
@@ -237,9 +233,7 @@ def find_anchors_in_text(text: str) -> list[tuple[re.Match, str, str]]:
     return deduped
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Main extraction logic
-# ─────────────────────────────────────────────────────────────────────
 
 
 def find_epub_extract_dir(temp_dir: Path) -> Path | None:

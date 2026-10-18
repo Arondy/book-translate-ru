@@ -124,7 +124,42 @@ def format_tree(el: etree._Element, level: int = 0) -> None:
             el.tail = "\n" + indent
 
 
+def _first_visible_char(el: etree._Element) -> str:
+    if has_sig_text(el.text):
+        return el.text.lstrip()[0]
+    for child in el:
+        if isinstance(child.tag, str):
+            c = _first_visible_char(child)
+            if c:
+                return c
+    return ""
+
+
+def _last_visible_char(el: etree._Element) -> str:
+    if len(el):
+        last = el[-1]
+        if isinstance(last.tag, str):
+            c = _last_visible_char(last)
+            if c:
+                return c
+            if has_sig_text(last.tail):
+                return last.tail.rstrip()[-1]
+    if has_sig_text(el.text):
+        return el.text.rstrip()[-1]
+    return ""
+
+
+def _is_word_char(ch: str) -> bool:
+    return bool(ch) and (ch.isalnum() or ch == "_")
+
+
 def normalize_emphasis_spaces(root: etree._Element) -> None:
+    """Insert a space around <emphasis> only between two word characters.
+
+    A space is needed when inline markup glues two words (`слово*курсив*`).
+    It must NOT be added next to punctuation: `*слово*, а?` and `*слово*.`
+    would otherwise become "слово , а?" / "слово .".
+    """
     for el in root.iter():
         if not isinstance(el.tag, str):
             continue
@@ -139,17 +174,19 @@ def normalize_emphasis_spaces(root: etree._Element) -> None:
             prev = child.getprevious()
             nxt = child.getnext()
 
-            # Слева: добавляем пробел только если перед emphasis нет другого тега
-            # и emphasis идёт сразу после текста родителя.
-            if prev is None and has_sig_text(el.text):
-                if not el.text.endswith((" ", "\n", "\t", "\r")):
-                    el.text += " "
+            # Слева: только если emphasis не первый тег и между текстом
+            # родителя и emphasis встретятся два словарных символа.
+            if prev is None and has_sig_text(el.text) and has_sig_text(child.text):
+                if _is_word_char(el.text.rstrip()[-1]) and _is_word_char(child.text[0]):
+                    if not el.text[-1].isspace():
+                        el.text += " "
 
-            # Справа: добавляем пробел только если после emphasis нет другого тега
-            # и дальше идёт текст в tail.
+            # Справа: только если emphasis последний тег и его tail начинается
+            # со словарного символа, а сам emphasis кончается словарным.
             if nxt is None and has_sig_text(child.tail):
-                if not child.tail.startswith((" ", "\n", "\t", "\r")):
-                    child.tail = " " + child.tail
+                if _is_word_char(_last_visible_char(child)) and _is_word_char(child.tail.lstrip()[0]):
+                    if not child.tail[0].isspace():
+                        child.tail = " " + child.tail
 
 
 def format_fb2(input_path: Path, output_path: Path) -> None:

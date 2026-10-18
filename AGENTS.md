@@ -109,7 +109,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 - If the glossary is damaged, the script stops. The script does not replace the glossary with an empty default.
 - `config.py` has the `DEFAULTS` dictionary. `config.toml` has the same values.
 - If you change one value, change the other value too.
-- Example: `[parallelism] batch_size` is 8 in `DEFAULTS` and 4 in `config.toml`.
+- Example: `[parallelism] batch_size` is 6 in both `DEFAULTS` and `config.toml`.
 - The scripts do not read `batch_size`. It is a recommendation for the orchestrator.
 - The scripts write to `sys.stdout` in UTF-8. The import of `common.py` or `config.py` sets UTF-8.
 - The scripts write files with `atomic_write_text` or `atomic_write_json`. These functions are safe on Windows.
@@ -117,7 +117,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 ## Windows and PowerShell
 
 - The developers use Windows.
-- Read `references/windows-powershell.md` before you start the scripts.
+- On Windows, read `references/windows-powershell.md` before you start the scripts.
 
 - A `python3 -c` command with a loop or a generator gives no output. The command fails without a message.
 - Write your Python code in a temporary `.py` file.

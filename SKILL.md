@@ -121,7 +121,7 @@ QA, не определяй рассказчика.
 | **Оценить качество прогона** | **LLM-агент** (`prompts/phase3_finish/пост_мортем.md`) |
 | **Применить грамматические/литературные правки** | **LLM-агент** (`prompts/phase3_finish/полировка_чанка.md`) |
 
-Скрипты никогда не угадывают семантику. Если нужно угадать - передаём LLM.
+Скрипты не угадывают семантику - это работа LLM-агента.
 
 ---
 
@@ -141,10 +141,10 @@ QA, не определяй рассказчика.
    (POV, род, культурные отсылки) решает LLM-агент.
 5. Перед каждой LLM-работой через субагента собери данные скриптами. Не
    подгружай чанки в свой контекст: он раздуется, и сработает auto-compact.
-6. Windows + PowerShell: прочти `references/windows-powershell.md` до начала
-   работы. Не используй `python3 -c` с циклами и генераторами, на PowerShell
-   они молча ничего не выводят; пиши временные `.py` файлы в
-   `<temp_dir>/process/`.
+6. **Только на Windows**: прочти `references/windows-powershell.md` до начала
+   работы (на Linux и macOS этот файл не нужен). Не используй `python3 -c` с
+   циклами и генераторами - на PowerShell они молча ничего не выводят; пиши
+   временные `.py` файлы в `<temp_dir>/process/`.
 7. **Шаг 3 - строгая пауза.** После сборки глоссария остановись и дождись
    подтверждения пользователя. Не переходи к шагу 4 автоматически, даже если
    в первом сообщении было «переведи книгу»: ошибки в глоссарии размножатся
@@ -162,75 +162,19 @@ QA, не определяй рассказчика.
    обязательный top-level `"version": 2`, `id` генерирует скрипт. Правь
    `glossary.json` только через `scripts/shared/edit_glossary_template.py`,
    никогда `str.replace` или sed.
+9. **Не пиши пользователю по ходу работы.** Сообщение пользователю
+   допустимо только в двух случаях: (а) вопрос, на который нужен его
+   ответ, (б) сообщение о переходе к следующей стадии (фаза или шаг).
+   Всё остальное - молчание: не отчитывайся о запуске скриптов, не
+   комментируй «перевожу чанк 7 из 40», не подводи промежуточные итоги,
+   не пересказывай план. Вопросы и паузы, предусмотренные пайплайном,
+   остаются в силе: пауза на глоссарии (шаг 3), новые термины после
+   батча (6f), рекомендации по роду (7.6), предложение compaction
+   (6g и 6h). Финальный отчёт - только после шага 9.
 
 ---
 
-## Структура проекта
-
-```
-book-translate-ru/
-├── SKILL.md                              # этот файл, lean-оркестратор
-├── config.toml                           # пользовательская конфигурация
-├── requirements.txt                      # Python-зависимости
-├── references/                           # детальные инструкции по фазам
-│   ├── phase-1-prepare.md                # шаги 0-3
-│   ├── phase-2-translate.md              # шаги 4-6
-│   ├── phase-3-finish.md                 # шаги 7-9
-│   ├── compaction-points.md              # точки сжатия контекста (когда и что)
-│   ├── windows-powershell.md             # Windows + PowerShell ограничения
-│   └── meta-json-schema.md               # схемы glossary.json (Часть 1) и meta.json (Часть 2)
-├── scripts/
-│   ├── shared/                           # общие скрипты для всех фаз
-│   │   ├── config.py                     # загрузчик config.toml
-│   │   ├── load_state.py                 # читает progress.json (resume)
-│   │   ├── save_state.py                 # пишет progress.json (checkpoint)
-│   │   ├── verify_batch.py               # проверка outputs/metas после батча перевода
-│   │   ├── check_metas.py                # проверка валидности JSON в meta-файлах
-│   │   ├── apply_merge_template.py       # TEMPLATE: прямой вызов apply_merge (для Windows)
-│   │   └── edit_glossary_template.py     # TEMPLATE: безопасная правка glossary.json через json.loads+dumps
-│   ├── phase1_prepare/                   # шаги 1-3
-│   │   ├── explore_epub.py               # исследование EPUB (перед convert)
-│   │   ├── convert.py                    # EPUB/FB2 в Markdown-чанки, стандартный путь через pandoc
-│   │   ├── convert_per_file.py           # EPUB в Markdown-чанки, альтернатива для проблемных EPUB с span-мусором
-│   │   ├── detect_epigraphs.py           # эпиграфы + сноски (детерминированно)
-│   │   ├── narrator_marker.py            # группировка чанков по heading'ам
-│   │   ├── extract_footnotes.py          # EPUB-сноски из отдельного XHTML в [^N]
-│   │   └── glossary.py                   # частоты, per-chunk таблицы, validate-glossary, find-duplicates, reset-run-state, confirm-terms
-│   ├── phase2_translate/                 # шаги 4-6
-│   │   ├── chunk_context.py              # neighbour context (prev/next excerpt)
-│   │   ├── run_state.py                  # planner (plan/record/status/mark-failed)
-│   │   └── merge_meta.py                 # транзакционный мерж meta в глоссарий
-│   └── phase3_finish/                    # шаги 7-9
-│       ├── pronoun_check.py              # сбор данных для LLM-сверки местоимений
-│       ├── post_mortem.py                # сбор данных для LLM-анализа качества
-│       ├── quality_check.py              # структурные проверки output.md (MT-баги)
-│       ├── verify_polish.py              # проверка контракта 8b.1 (ratio + headings)
-│       ├── fb2_builder.py                # прямой сборщик FB2 из Markdown, lxml + XSD
-│       ├── pretty_fb2.py                 # переформатирование FB2 (<p> на одной строке)
-│       ├── merge_and_build.py            # сборка чанков в output.md и book.fb2
-│       └── schemas/                      # FB2 2.0 XSD-схемы
-│           ├── FictionBook.xsd
-│           ├── FictionBookGenres.xsd
-│           ├── FictionBookLang.xsd
-│           └── FictionBookLinks.xsd
-├── prompts/
-│   ├── phase2_translate/                 # промпты для субагентов фазы 2
-│   │   ├── translate_chunk.md
-│   │   ├── определение_рассказчика.md
-│   │   └── эпиграф_обработка.md
-│   └── phase3_finish/                    # промпты для субагентов фазы 3
-│       ├── qa_chunk.md
-│       ├── полировка_чанка.md
-│       ├── сверка_местоимений.md
-│       ├── пост_мортем.md
-│       ├── грамматическая_обработка.md
-│       └── литературная_обработка.md
-└── templates/
-    ├── голос_книги.md
-    └── словарь_терминов.md
-```
-
-### Структура рабочей директории (`<книга>_temp/`)
+## Структура рабочей директории (`<книга>_temp/`)
 
 ```
 <книга>_temp/                            # корень, human-facing
@@ -255,7 +199,7 @@ book-translate-ru/
     ├── output_chunk0001.md …            # переведённые чанки
     ├── output_chunk0001.meta.json …     # наблюдения субагентов
     ├── output_chunk0001.qa.json …       # QA-результат (шаг 7.5)
-    ├── output_chunk0001.md.bak …        # бэкап перед polish (шаг 8b.1)
+    ├── output_chunk0001.md.bak …        # бэкап перед polish (создаёт apply_polish.py, шаг 8b.1)
     ├── pronoun_input.json               # данные для LLM-сверки местоимений
     ├── post_mortem_input.json           # данные для LLM-анализа пост-мортем
     └── run_state.json                   # состояние прогона (resume, plan, failed)
@@ -310,3 +254,6 @@ book-translate-ru/
 - Не оставлять многостраничный ALL CAPS
 - Не сглаживать голос рассказчика
 - Не делать реплики персонажей «одинаково причёсанными»
+- Не оставлять реплику нового говорящего в строке предыдущего абзаца:
+  смена говорящего - новая строка с тире (`references/примеры_обработки.md`,
+  Категория 20)

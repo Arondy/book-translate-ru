@@ -11,6 +11,11 @@ Builds a FictionBook 2.0 (.fb2) file from Markdown with correct handling of:
   - Footnotes [^N] + [^N]: ... → <a l:href="#note_N"><sup>N</sup></a> + <body name="notes"><section id="note_N">...</section></body>
   - Scene breaks (*** on its own line) → <empty-line/>
   - Direct speech with em-dash preserved as plain <p>
+  - Markdown backslash escapes (\\*, \\_, \\\\…) → literal characters; a
+    single trailing \\ (hard break) ends the paragraph
+  - Sections that would violate the FB2 sectionType rules are repaired:
+    a heading-only / image-only section becomes a <subtitle>, and extra
+    leading images are split into their own sections
 
 Uses lxml.etree for XML construction with automatic escaping.
 Output is pretty-printed via pretty_fb2.py, then validated against
@@ -44,9 +49,8 @@ if hasattr(sys.stdout, "reconfigure"):
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Namespaces
-# ─────────────────────────────────────────────────────────────────────
+
 
 NS_FB = "http://www.gribuser.ru/xml/fictionbook/2.0"
 NS_XLINK = "http://www.w3.org/1999/xlink"
@@ -64,9 +68,7 @@ def _qxl(tag: str) -> str:
     return f"{{{NS_XLINK}}}{tag}"
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Image handling
-# ─────────────────────────────────────────────────────────────────────
 
 
 def _guess_content_type(path: str) -> str:
@@ -93,9 +95,14 @@ def _load_image(path: Path) -> tuple[str, bytes] | None:
         return None
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Inline Markdown → FB2 inline markup (lxml elements)
-# ─────────────────────────────────────────────────────────────────────
+
+
+# Characters that a backslash may escape in Markdown (CommonMark set).
+# Pandoc emits these for literal punctuation (e.g. `\*` for a footnote-like
+# star in a book list, `\<` etc.), and they must not reach the text or be
+# mis-parsed as emphasis delimiters.
+_ESCAPABLE = set("\\`*_{}[]()#+-.!>|~")
 
 
 def _process_inline_to_children(text: str) -> list[etree._Element | str]:
@@ -127,6 +134,13 @@ def _process_inline_to_children(text: str) -> list[etree._Element | str]:
     i = 0
     n = len(text)
     while i < n:
+        # Backslash escape: `\*` → literal `*`, `\\` → `\`. Handled before
+        # the delimiter patterns so an escaped `*` never opens emphasis.
+        if text[i] == "\\" and i + 1 < n and text[i + 1] in _ESCAPABLE:
+            buf += text[i + 1]
+            i += 2
+            continue
+
         matched = False
         for pattern, kind in patterns:
             m = pattern.match(text, i)
@@ -217,9 +231,7 @@ def _build_inline(text: str, parent: etree._Element, image_id_map: dict[str, str
         parent.text = first_text
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Block-level Markdown parsing
-# ─────────────────────────────────────────────────────────────────────
 
 
 class Block:
@@ -236,6 +248,18 @@ class Block:
         self.kind = kind
         for k, v in kwargs.items():
             setattr(self, k, v)
+
+
+def _is_hard_break(line: str) -> bool:
+    """True for a Markdown hard line break: a single trailing backslash."""
+    s = line.rstrip()
+    return s.endswith("\\") and not s.endswith("\\\\")
+
+
+def _strip_trailing_hard_break(line: str) -> str:
+    if _is_hard_break(line):
+        return line.rstrip()[:-1].rstrip()
+    return line
 
 
 def parse_markdown(text: str) -> list[Block]:
@@ -301,10 +325,15 @@ def parse_markdown(text: str) -> list[Block]:
             blocks.append(Block("blockquote", text="\n".join(bq_lines)))
             continue
 
-        para_lines = [line]
+        para_lines = [_strip_trailing_hard_break(line)]
         i += 1
+        if _is_hard_break(line):
+            # Trailing `\` = hard break: the paragraph ends here.
+            blocks.append(Block("paragraph", text=para_lines[0].strip()))
+            continue
         while i < n:
-            next_stripped = lines[i].strip()
+            next_line = lines[i]
+            next_stripped = next_line.strip()
             if (
                 not next_stripped
                 or next_stripped.startswith("#")
@@ -316,16 +345,16 @@ def parse_markdown(text: str) -> list[Block]:
                 or re.match(r"^\[\^([^\]]+)\]:\s*", next_stripped)
             ):
                 break
-            para_lines.append(lines[i])
+            para_lines.append(_strip_trailing_hard_break(next_line))
             i += 1
+            if _is_hard_break(next_line):
+                break
         blocks.append(Block("paragraph", text="\n".join(para_lines).strip()))
 
     return blocks
 
 
-# ─────────────────────────────────────────────────────────────────────
 # FB2 XML construction (lxml.etree)
-# ─────────────────────────────────────────────────────────────────────
 
 
 def _build_description(
@@ -543,6 +572,85 @@ def _build_body(
     return body
 
 
+def _localname(el: etree._Element) -> str:
+    return etree.QName(el.tag).localname if isinstance(el.tag, str) else ""
+
+
+# Elements that satisfy sectionType's mandatory content choice. `<image>` is
+# NOT here: the schema allows at most one leading image and still requires a
+# real content element (p / subtitle / empty-line / …) after it.
+_SECTION_CONTENT_TAGS = {"p", "poem", "subtitle", "cite", "empty-line", "table"}
+
+
+def _subtitle_from_title(title_el: etree._Element) -> etree._Element:
+    """Turn a <title> into an equivalent <subtitle> (text + inline markup)."""
+    sub = etree.Element(_q("subtitle"))
+    src = title_el.find(_q("p"))
+    if src is None:
+        src = title_el
+    sub.text = src.text
+    for child in list(src):
+        sub.append(child)
+    return sub
+
+
+def _repair_sections(body: etree._Element) -> None:
+    """Make every <section> schema-valid.
+
+    The builder turns each heading into a flat sibling section. Two shapes
+    are invalid per FB2 2.0 (sectionType): a section whose only child is a
+    <title> (or an <image>), and a section with more than one leading
+    <image>. Both occur in real front/back matter (title page, "Содержание",
+    "Другие книги автора"). Repair instead of failing XSD validation:
+
+      - extra leading images are moved into their own sibling sections;
+      - a section with no content element gets its <title> turned into a
+        <subtitle> (a rubric line), or an <empty-line/> when it has no title.
+    """
+    for sec in [c for c in body if _localname(c) == "section"]:
+        _repair_section(sec)
+
+
+def _repair_section(sec: etree._Element) -> None:
+    for child in list(sec):
+        if _localname(child) == "section":
+            _repair_section(child)
+
+    # 1. sectionType allows at most one leading image.
+    images = [c for c in sec if _localname(c) == "image"]
+    if len(images) > 1:
+        parent = sec.getparent()
+        insert_at = parent.index(sec)
+        for extra in images[1:]:
+            sec.remove(extra)
+            new_sec = etree.Element(_q("section"))
+            new_sec.append(extra)
+            etree.SubElement(new_sec, _q("empty-line"))
+            insert_at += 1
+            parent.insert(insert_at, new_sec)
+
+    # 2. A section needs child sections OR at least one content element.
+    has_content = any(_localname(c) in _SECTION_CONTENT_TAGS for c in sec)
+    has_child_sections = any(_localname(c) == "section" for c in sec)
+    if has_content or has_child_sections:
+        return
+
+    title = sec.find(_q("title"))
+    if title is not None:
+        sub = _subtitle_from_title(title)
+        # sectionType order is title?, epigraph*, image?, annotation?, content.
+        # With the title gone the subtitle is content, so it must follow any
+        # leading epigraph/image/annotation.
+        insert_at = 0
+        for i, child in enumerate(sec):
+            if _localname(child) in ("epigraph", "image", "annotation"):
+                insert_at = i + 1
+        sec.remove(title)
+        sec.insert(insert_at, sub)
+    else:
+        etree.SubElement(sec, _q("empty-line"))
+
+
 def _build_notes_body(root: etree._Element, footnote_defs: list[Block]) -> etree._Element | None:
     """Build <body name="notes"> with all footnote definitions as sections."""
     if not footnote_defs:
@@ -641,9 +749,7 @@ def collect_images(blocks: list[Block], temp_dir: Path, md_text: str = "") -> di
     return images
 
 
-# ─────────────────────────────────────────────────────────────────────
 # XSD validation
-# ─────────────────────────────────────────────────────────────────────
 
 
 def _validate_fb2_xsd(fb2_path: Path) -> tuple[bool, list[str]]:
@@ -675,9 +781,7 @@ def _validate_fb2_xsd(fb2_path: Path) -> tuple[bool, list[str]]:
     return False, errors
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Main entry point
-# ─────────────────────────────────────────────────────────────────────
 
 
 def build_fb2(
@@ -711,7 +815,9 @@ def build_fb2(
 
     root = etree.Element(_q("FictionBook"), nsmap=NSMAP)
     _build_description(root, title, author, date_str, doc_id, genre=genre)
-    _build_body(root, body_blocks, image_id_map)
+    body = _build_body(root, body_blocks, image_id_map)
+    if body is not None:
+        _repair_sections(body)
     _build_notes_body(root, footnote_defs)
     _build_binaries(root, images)
 
@@ -752,9 +858,7 @@ def build_fb2(
     return True, errors
 
 
-# ─────────────────────────────────────────────────────────────────────
 # CLI
-# ─────────────────────────────────────────────────────────────────────
 
 
 def main():

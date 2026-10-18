@@ -4,10 +4,14 @@ Usage:
     python3 glossary.py count-frequencies <temp_dir>
     python3 glossary.py print-terms-for-chunk <temp_dir> <chunk_file>
     python3 glossary.py validate-glossary <temp_dir> [--fix]
-    python3 glossary.py validate-manifest <temp_dir>
+    python3 glossary.py validate-manifest <temp_dir> [--strict]
     python3 glossary.py reset-run-state <temp_dir> [--prune-zero-freq]
     python3 glossary.py find-duplicates <temp_dir>
     python3 glossary.py inspect-manifest <temp_dir>
+    python3 glossary.py confirm-terms <temp_dir> [--all] [--id ID ...]
+                        [--source NAME ...] [--note TEXT] [--force]
+
+Run `python3 glossary.py <command> --help` for the flags of one command.
 
 Commands:
     count-frequencies      Recompute term frequencies from chunks.
@@ -54,6 +58,7 @@ Data-loss safety (see references/meta-json-schema.md, "Схема glossary.json"
     instead, so a bad write by a sub-agent cannot destroy collected terms.
 """
 
+import argparse
 import hashlib
 import json
 import re
@@ -61,7 +66,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import find_english_leaks, make_term_id, process_dir
+from common import (
+    find_english_leaks,
+    make_term_id,
+    process_dir,
+    relevant_terms,
+    surface_in_text,
+    term_surface_forms,
+)
 from config import get_config
 from glossary_io import (
     GLOSSARY_FILE,
@@ -72,26 +84,9 @@ from glossary_io import (
     save_glossary,
 )
 
-# Word boundary that works for names with apostrophes (O'Connor) and
-# hyphens (Wit-Bit). Standard \b breaks on these because ' and - are not
-# \w, so the boundary fires mid-name. We treat any alphanumeric char (incl.
-# Cyrillic) as "inside a word" and everything else as a boundary.
-_BOUNDARY_START = r"(?<![A-Za-zА-Яа-я0-9])"
-_BOUNDARY_END = r"(?![A-Za-zА-Яа-я0-9])"
-
-
-def surface_in_text(surface: str, text: str) -> bool:
-    """True if surface appears as a whole word in text.
-
-    For surfaces of length <= 2 we fall back to plain substring match
-    because word-boundary regex on a 1-char name is noisy either way.
-    """
-    if not surface:
-        return False
-    if len(surface) <= 2:
-        return surface in text
-    pattern = _BOUNDARY_START + re.escape(surface) + _BOUNDARY_END
-    return bool(re.search(pattern, text, re.IGNORECASE))
+# Word boundaries and surface matching (surface_in_text,
+# term_surface_forms) live in scripts/shared/common.py — the single
+# source of truth shared with run_state.py.
 
 
 MANIFEST_FILE = "manifest.json"  # lives in process/
@@ -196,13 +191,6 @@ def confirm_terms(
     return len(changed_idx)
 
 
-def term_surface_forms(term: dict) -> list[str]:
-    forms = [str(term.get("source", "")).lower()]
-    for alias in term.get("aliases", []) or []:
-        forms.append(str(alias).lower())
-    return [f for f in forms if f]
-
-
 def count_frequencies(temp_dir: Path):
     # Snapshot the disk state BEFORE loading — this is the guard against
     # overwriting a real glossary with the result of a bad/partial read.
@@ -252,11 +240,14 @@ def count_frequencies(temp_dir: Path):
         print("      остатки series-wide глоссария. Проверь и удали лишние.")
 
 
-def print_terms_for_chunk(temp_dir: Path, chunk_file: str):
+def terms_table_for_chunk(temp_dir: Path, chunk_file: str) -> str:
+    """Return the markdown per-chunk term table ("" when no terms).
+
+    Shared shape used by `print-terms-for-chunk` and prepare_batch.py.
+    """
     glossary = load_glossary(temp_dir)
     if not glossary["terms"]:
-        print("")  # empty output = no terms
-        return
+        return ""
 
     chunk_path = process_dir(temp_dir) / chunk_file
     if not chunk_path.exists():
@@ -264,43 +255,22 @@ def print_terms_for_chunk(temp_dir: Path, chunk_file: str):
         sys.exit(1)
 
     text = chunk_path.read_text(encoding="utf-8").lower()
-
-    chunk_terms = []
-    top_n = glossary.get("high_frequency_top_n", 20)
-
-    # Sort terms by frequency descending. Use enumerate for O(n) index lookup
-    # (list.index() is O(n) per call and buggy for duplicate-valued dicts).
-    sorted_terms = sorted(glossary["terms"], key=lambda t: t.get("frequency", 0), reverse=True)
-
-    for idx, term in enumerate(sorted_terms):
-        surfaces = term_surface_forms(term)
-        appears_in_chunk = any(surface_in_text(s, text) for s in surfaces)
-        is_high_freq = idx < top_n
-
-        if appears_in_chunk or is_high_freq:
-            aliases_str = ", ".join(term.get("aliases", []) or [])
-            chunk_terms.append(
-                {
-                    "source": term.get("source", ""),
-                    "alias": aliases_str,
-                    "target": term.get("target", ""),
-                }
-            )
-
+    chunk_terms = relevant_terms(glossary, text)
     if not chunk_terms:
-        print("")
-        return
+        return ""
 
-    # Print as markdown table
-    print("| Оригинал | Альтернативы | Перевод |")
-    print("|----------|-------------|---------|")
-    for ct in chunk_terms:
-        print(f"| {ct['source']} | {ct['alias']} | {ct['target']} |")
+    lines = ["| Оригинал | Альтернативы | Перевод |", "|----------|-------------|---------|"]
+    for term in chunk_terms:
+        alias = ", ".join(term.get("aliases", []) or [])
+        lines.append(f"| {term.get('source', '')} | {alias} | {term.get('target', '')} |")
+    return "\n".join(lines)
 
 
-# ─────────────────────────────────────────────────────────────────────
+def print_terms_for_chunk(temp_dir: Path, chunk_file: str):
+    print(terms_table_for_chunk(temp_dir, chunk_file))
+
+
 # Content sanity (called by validate-manifest after structural checks)
-# ─────────────────────────────────────────────────────────────────────
 
 
 def content_sanity_report(temp_dir: Path, manifest: dict) -> dict:
@@ -343,7 +313,7 @@ def content_sanity_report(temp_dir: Path, manifest: dict) -> dict:
     return report
 
 
-def validate_manifest(temp_dir: Path):
+def validate_manifest(temp_dir: Path, strict: bool = False):
     """Structural + content sanity check.
 
     Exits non-zero if:
@@ -354,7 +324,6 @@ def validate_manifest(temp_dir: Path):
     - any chunk has ratio outliers (warning by default; --strict to fail)
     - any chunk has suspicious English leaks (warning by default)
     """
-    strict = "--strict" in sys.argv
     manifest_path = process_dir(temp_dir) / MANIFEST_FILE
     if not manifest_path.exists():
         print("ERROR: manifest.json not found", file=sys.stderr)
@@ -421,9 +390,8 @@ def validate_manifest(temp_dir: Path):
         print(f"VALIDATION OK: {total} chunks, all outputs present and valid")
 
 
-# ─────────────────────────────────────────────────────────────────────
 # validate-glossary — schema gate for glossary.json
-# ─────────────────────────────────────────────────────────────────────
+
 
 VALID_CATEGORIES = {"person", "place", "org", "term", "other"}
 VALID_GENDERS = {"male", "female", "neutral", "unknown"}
@@ -939,102 +907,103 @@ def _inspect_manifest(temp_dir: Path) -> None:
         print(f"  size stats: min={min(sizes)}, max={max(sizes)}, avg={sum(sizes) // len(sizes)}")
 
 
-def main() -> None:
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="glossary.py",
+        description="Glossary management for book-translate-ru.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
-    command = sys.argv[1]
+    p = sub.add_parser("count-frequencies", help="recompute term frequencies from chunks")
+    p.add_argument("temp_dir")
 
-    if command == "count-frequencies":
-        if len(sys.argv) < 3:
-            print("Usage: glossary.py count-frequencies <temp_dir>")
-            sys.exit(1)
-        count_frequencies(Path(sys.argv[2]))
+    p = sub.add_parser("print-terms-for-chunk", help="print the per-chunk term table")
+    p.add_argument("temp_dir")
+    p.add_argument("chunk_file")
 
-    elif command == "print-terms-for-chunk":
-        if len(sys.argv) < 4:
-            print("Usage: glossary.py print-terms-for-chunk <temp_dir> <chunk_file>")
-            sys.exit(1)
-        print_terms_for_chunk(Path(sys.argv[2]), sys.argv[3])
+    p = sub.add_parser("validate-glossary", help="schema gate for glossary.json")
+    p.add_argument("temp_dir")
+    p.add_argument("--fix", action="store_true", help="repair what can be repaired")
 
-    elif command == "validate-glossary":
-        if len(sys.argv) < 3:
-            print("Usage: glossary.py validate-glossary <temp_dir> [--fix]")
-            sys.exit(1)
-        validate_glossary(Path(sys.argv[2]), fix="--fix" in sys.argv)
+    p = sub.add_parser("validate-manifest", help="check that all chunks have outputs")
+    p.add_argument("temp_dir")
+    p.add_argument("--strict", action="store_true", help="fail on ratio/English warnings")
 
-    elif command == "validate-manifest":
-        if len(sys.argv) < 3:
-            print("Usage: glossary.py validate-manifest <temp_dir> [--strict]")
-            sys.exit(1)
-        validate_manifest(Path(sys.argv[2]))
+    p = sub.add_parser("reset-run-state", help="strip stale per-run metadata")
+    p.add_argument("temp_dir")
+    p.add_argument(
+        "--prune-zero-freq",
+        dest="prune_zero_freq",
+        action="store_true",
+        help="also drop terms with frequency 0",
+    )
 
-    elif command == "reset-run-state":
-        if len(sys.argv) < 3:
-            print("Usage: glossary.py reset-run-state <temp_dir> [--prune-zero-freq]")
-            sys.exit(1)
-        temp_dir = Path(sys.argv[2])
-        prune_zero = "--prune-zero-freq" in sys.argv
-        reset_run_state(temp_dir, prune_zero)
+    p = sub.add_parser("find-duplicates", help="scan for near-duplicate terms")
+    p.add_argument("temp_dir")
 
-    elif command == "find-duplicates":
-        if len(sys.argv) < 3:
-            print("Usage: glossary.py find-duplicates <temp_dir>")
-            sys.exit(1)
-        find_duplicates(Path(sys.argv[2]))
+    p = sub.add_parser("inspect-manifest", help="human-readable manifest summary")
+    p.add_argument("temp_dir")
 
-    elif command == "inspect-manifest":
-        if len(sys.argv) < 3:
-            print("Usage: glossary.py inspect-manifest <temp_dir>")
-            sys.exit(1)
-        _inspect_manifest(Path(sys.argv[2]))
+    p = sub.add_parser("confirm-terms", help="confirm low-confidence terms")
+    p.add_argument("temp_dir")
+    p.add_argument("--all", dest="all_terms", action="store_true", help="confirm every new term")
+    p.add_argument("--id", dest="term_ids", nargs="+", metavar="ID", help="confirm terms by id")
+    p.add_argument(
+        "--source",
+        dest="sources",
+        nargs="+",
+        metavar="NAME",
+        help="confirm terms by English source",
+    )
+    p.add_argument("--note", help="note to store with the confirmed terms")
+    p.add_argument("--force", action="store_true", help="confirm even if the target is empty")
 
-    elif command == "confirm-terms":
-        if len(sys.argv) < 3:
-            print(
-                "Usage: glossary.py confirm-terms <temp_dir> "
-                "[--all] [--id ID ...] [--source NAME ...] [--note TEXT] [--force]"
-            )
-            sys.exit(1)
-        temp_dir = Path(sys.argv[2])
-        all_terms = "--all" in sys.argv
-        force = "--force" in sys.argv
-        note = sys.argv[sys.argv.index("--note") + 1] if "--note" in sys.argv else None
-        term_ids: list[str] = []
-        sources: list[str] = []
-        if "--id" in sys.argv:
-            idx = sys.argv.index("--id")
-            for a in sys.argv[idx + 1 :]:
-                if a.startswith("--"):
-                    break
-                term_ids.append(a)
-        if "--source" in sys.argv:
-            idx = sys.argv.index("--source")
-            for a in sys.argv[idx + 1 :]:
-                if a.startswith("--"):
-                    break
-                sources.append(a)
-        if not (all_terms or term_ids or sources):
+    return parser
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+
+    if args.command == "count-frequencies":
+        count_frequencies(Path(args.temp_dir))
+
+    elif args.command == "print-terms-for-chunk":
+        print_terms_for_chunk(Path(args.temp_dir), args.chunk_file)
+
+    elif args.command == "validate-glossary":
+        validate_glossary(Path(args.temp_dir), fix=args.fix)
+
+    elif args.command == "validate-manifest":
+        validate_manifest(Path(args.temp_dir), strict=args.strict)
+
+    elif args.command == "reset-run-state":
+        reset_run_state(Path(args.temp_dir), args.prune_zero_freq)
+
+    elif args.command == "find-duplicates":
+        find_duplicates(Path(args.temp_dir))
+
+    elif args.command == "inspect-manifest":
+        _inspect_manifest(Path(args.temp_dir))
+
+    elif args.command == "confirm-terms":
+        if not (args.all_terms or args.term_ids or args.sources):
             print("ERROR: укажи --all, --id или --source", file=sys.stderr)
-            sys.exit(1)
+            return 1
         confirm_terms(
-            temp_dir,
-            all_terms=all_terms,
-            term_ids=(term_ids or None),
-            sources=(sources or None),
-            note=note,
-            force=force,
+            Path(args.temp_dir),
+            all_terms=args.all_terms,
+            term_ids=(args.term_ids or None),
+            sources=(args.sources or None),
+            note=args.note,
+            force=args.force,
         )
 
-    else:
-        print(f"Unknown command: {command}", file=sys.stderr)
-        sys.exit(1)
+    return 0
 
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except GlossaryError as e:
         # Never swallow a glossary problem: fail loudly with a non-zero exit
         # so the orchestrator cannot mistake data loss for success.

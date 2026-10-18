@@ -43,6 +43,22 @@ def process_dir(temp_dir: Path) -> Path:
     return p
 
 
+# Suffixes of transient chunk files that must never be treated as the real
+# `output_chunkNNNN.md`: pre-polish backups, atomic-write leftovers and the
+# polish sub-agent's output (swapped in by apply_polish.py).
+_CHUNK_OUTPUT_EXCLUDE = (".bak", ".tmp", ".polished.md")
+
+
+def chunk_output_files(pdir: Path) -> list[Path]:
+    """Return the real `output_chunkNNNN.md` files in <pdir>, sorted.
+
+    Excludes `.bak`, `.tmp` and `.polished.md` companions so a lingering
+    polish artifact cannot be merged, verified or counted twice.
+    """
+    files = sorted(pdir.glob("output_chunk*.md"))
+    return [f for f in files if not f.name.endswith(_CHUNK_OUTPUT_EXCLUDE)]
+
+
 def sha256_file(path: Path) -> str:
     """Return SHA-256 hex digest of a file."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -65,7 +81,6 @@ def run_cmd(cmd: list[str], desc: str = "", log_desc: bool = False) -> str:
         raise
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Glossary term ids
 #
 # `id` is a REQUIRED field of every glossary term (run_state.py keys
@@ -79,7 +94,6 @@ def run_cmd(cmd: list[str], desc: str = "", log_desc: bool = False) -> str:
 #
 # Collisions (two different sources normalizing to the same slug) get a
 # numeric suffix: "_2", "_3", ...
-# ─────────────────────────────────────────────────────────────────────
 
 
 def make_term_id(source: str, existing_ids: Iterable[str] = ()) -> str:
@@ -121,6 +135,68 @@ def term_id_of(term: dict) -> str:
     if isinstance(tid, str) and tid.strip():
         return tid
     return make_term_id(term.get("source", ""))
+
+
+# Glossary surface matching
+#
+# Single source of truth for "does this term appear in this text".
+# Used by glossary.py (frequency count, per-chunk table) and run_state.py
+# (which terms a translated chunk actually used).
+#
+# Word boundary that works for names with apostrophes (O'Connor) and
+# hyphens (Wit-Bit). Standard \b breaks on these because ' and - are not
+# \w, so the boundary fires mid-name. We treat any alphanumeric char
+# (incl. Cyrillic) as "inside a word" and everything else as a boundary.
+
+
+_BOUNDARY_START = r"(?<![A-Za-zА-Яа-я0-9])"
+_BOUNDARY_END = r"(?![A-Za-zА-Яа-я0-9])"
+
+
+def term_surface_forms(term: dict) -> list[str]:
+    """Lowercased source + aliases of a term, empty forms removed."""
+    forms = [str(term.get("source", "")).lower()]
+    for alias in term.get("aliases", []) or []:
+        forms.append(str(alias).lower())
+    return [f for f in forms if f]
+
+
+def surface_in_text(surface: str, text: str) -> bool:
+    """True if surface appears as a whole word in text.
+
+    For surfaces of length <= 2 we fall back to plain substring match
+    because word-boundary regex on a 1-char name is noisy either way.
+    """
+    if not surface:
+        return False
+    if len(surface) <= 2:
+        return surface in text
+    pattern = _BOUNDARY_START + re.escape(surface) + _BOUNDARY_END
+    return bool(re.search(pattern, text, re.IGNORECASE))
+
+
+def relevant_terms(glossary: dict, text: str, top_n: int | None = None) -> list[dict]:
+    """Glossary terms relevant to one chunk, in frequency order.
+
+    A term is relevant when it appears in `text` (by any surface form) or
+    is among the top-N most frequent terms of the book. `text` must be
+    lowercased by the caller, exactly like glossary.py does.
+
+    Shared by glossary.py (per-chunk prompt table) and prepare_batch.py so
+    both build the same table.
+    """
+    if top_n is None:
+        top_n = glossary.get("high_frequency_top_n", 20)
+    sorted_terms = sorted(
+        glossary.get("terms", []),
+        key=lambda t: t.get("frequency", 0),
+        reverse=True,
+    )
+    result: list[dict] = []
+    for idx, term in enumerate(sorted_terms):
+        if idx < top_n or any(surface_in_text(s, text) for s in term_surface_forms(term)):
+            result.append(term)
+    return result
 
 
 def ensure_term_ids(terms: list[dict]) -> list[tuple[str, str]]:
@@ -165,7 +241,6 @@ def find_english_leaks(text: str, min_chars: int = 80) -> list[tuple[int, int, s
     return leaks
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Words in two alphabets
 #
 # A translation model occasionally switches keyboards mid-word: "dошло",
@@ -173,7 +248,7 @@ def find_english_leaks(text: str, min_chars: int = 80) -> list[tuple[int, int, s
 # as "голосом". Detection only: the text is never changed here, the fix
 # belongs to the translating sub-agent (the cause is upstream, in the
 # prompt or the model).
-# ─────────────────────────────────────────────────────────────────────
+
 
 # Target alphabet -> the alphabet whose letters inside its words are a slip.
 _SLIP_ALPHABET = {"CYRILLIC": "LATIN", "GREEK": "LATIN", "LATIN": "CYRILLIC"}
@@ -219,3 +294,95 @@ def find_mixed_words(
         if script in alphabets and slip in alphabets and word.casefold() not in protected_set:
             mixed.append((m.start(), word))
     return mixed
+
+
+# Table-of-contents removal
+#
+# A TOC survives the EPUB -> Markdown step in several shapes: Markdown
+# links, list items, or — once the phase-1 cleaner has unlinked Calibre
+# anchors — a run of bare headings. Detection must not rely on links
+# alone, and must stop at the first heading followed by real content
+# rather than at a heading level (a same-level TOC would otherwise eat
+# the book).
+
+
+_TOC_HEADING_RE = re.compile(
+    r"^#{1,6}\s+(СОДЕРЖАНИЕ|Содержание|Contents|Table of Contents|TOC|"
+    r"Оглавление|ОГЛАВЛЕНИЕ)\s*(?:\{[^}]*\})?\s*$",
+    re.IGNORECASE,
+)
+
+_HEADING_RE = re.compile(r"^#{1,6}\s+")
+
+
+def _looks_like_toc_entry(text: str) -> bool:
+    s = text.strip()
+    if not s:
+        return True
+    if "](#" in s or re.search(r"\[#?[\w\-]+\]", s) or s.startswith("<a "):
+        return True
+    if re.match(r"^[\d\-\*+]\.?\s", s):
+        return True
+    if _HEADING_RE.match(s):
+        return True
+    # A bare short line without sentence punctuation: a chapter title or a
+    # TOC entry — indistinguishable on its own, hence the lookahead below.
+    if len(s) <= 120 and not s.endswith((".", "!", "?", "…", ":", ";", "»")):
+        return True
+    return False
+
+
+def _next_nonblank(lines: list[str], start: int) -> int:
+    j = start
+    while j < len(lines) and not lines[j].strip():
+        j += 1
+    return j
+
+
+def strip_toc_block(md_text: str) -> str:
+    """Remove a table-of-contents block (its heading and all entries).
+
+    Entries may be links, list items, or bare headings (after the phase-1
+    cleaner unlinks Calibre anchors). The block ends at the first heading
+    that is followed by non-entry content — that heading is the first real
+    chapter and is kept.
+
+    Shared by convert.py (phase 1) and merge_and_build.py (phase 3).
+    """
+    lines = md_text.split("\n")
+    out: list[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        if not _TOC_HEADING_RE.match(line.strip()):
+            out.append(line)
+            i += 1
+            continue
+
+        # The heading is a TOC only when an entry follows it.
+        j = _next_nonblank(lines, i + 1)
+        if j >= n or not _looks_like_toc_entry(lines[j]):
+            out.append(line)
+            i += 1
+            continue
+
+        # Skip the heading and its entries; stop at the first heading that
+        # is followed by real content, or at the first non-entry line.
+        i += 1
+        while i < n:
+            s = lines[i].strip()
+            if not s:
+                i += 1
+                continue
+            if _HEADING_RE.match(s):
+                nxt = _next_nonblank(lines, i + 1)
+                if nxt < n and _looks_like_toc_entry(lines[nxt]):
+                    i += 1  # a TOC entry rendered as a heading
+                    continue
+                break  # the first real chapter heading
+            if _looks_like_toc_entry(s):
+                i += 1
+                continue
+            break
+    return "\n".join(out)

@@ -118,7 +118,8 @@ def main():
         "notes": (
             "STRUCTURAL HINTS only. These are groupings by heading patterns "
             "(e.g., all chunks under heading 'Interlude 5' share an arc label). "
-            "The actual narrator identity (Kaladin, Shallan, Wit, …) is decided "
+            "The actual narrator identity (the POV character or voice of "
+            "this chunk) is decided "
             "by the translation sub-agent via prompts/phase2_translate/определение_рассказчика.md, "
             "which fills in `narrator_identification` in output_chunk*.meta.json."
         ),

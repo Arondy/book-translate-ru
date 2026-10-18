@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import process_dir
+from common import chunk_output_files, process_dir
 from config import get_config  # Snippet tunables — loaded from config.toml [pronoun_check] section
 
 _cfg = get_config()
@@ -70,7 +70,7 @@ def collect(temp_dir: Path) -> dict:
     # Per-chunk text snippets (for the agent's evidence; full text is in
     # the file system, only samples are passed here to keep context small).
     snippets: dict = {}
-    for op in sorted(pdir.glob("output_chunk*.md")):
+    for op in chunk_output_files(pdir):
         cid = op.name.replace("output_", "").replace(".md", "")
         if cid not in metas:
             continue

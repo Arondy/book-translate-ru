@@ -1,24 +1,10 @@
-"""TEMPLATE: Apply merge_meta decisions by calling apply_merge() directly.
+"""DEPRECATED: use `merge_meta.py apply-merge --plan ... --decisions ...`.
 
-This is a TEMPLATE script — COPY to <temp_dir>/process/_apply.py and
-customize the `decisions` list, then run. This bypasses stdin/CLI
-(which is unreliable on Windows + PowerShell with Cyrillic paths).
-
-Usage (after copying and editing):
-    1. Edit SKILL_DIR and TEMP_DIR paths below (or pass as args).
-    2. Edit the `decisions` list with your merge decisions.
-    3. Run: python3 _apply.py
-
-Why this exists:
-  On Windows + PowerShell, `echo '<json>' | python3 merge_meta.py apply-merge`
-  is unreliable with Cyrillic paths. Calling apply_merge() directly
-  via Python import is more robust. See references/windows-powershell.md.
-
-IMPORTANT for conflicting_new_entity_proposals:
-  In merge_meta.py, the field is called DIFFERENTLY for different kinds:
-    - existing_entity_conflict → "proposed_variants" in prepare-merge output
-    - conflicting_new_entity_proposals → "variants" in prepare-merge output
-  This template auto-detects which field exists and uses it.
+This template existed only because `apply-merge` used to read stdin, which
+was unreliable on Windows + PowerShell with Cyrillic paths. That is fixed:
+`merge_meta.py apply-merge <temp_dir> --plan plan.json --decisions d.json`
+takes files, and pulls variants/kind from the plan by id. Kept for
+reference only — do not copy it for new runs.
 """
 
 import sys

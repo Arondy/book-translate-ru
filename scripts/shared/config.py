@@ -1,9 +1,10 @@
 """Shared configuration loader for book-translate-ru skill.
 
 Loads config.toml from one of these locations (first match wins):
-  1. <cwd>/config.toml
-  2. <cwd>/<book>_temp/config.toml
-  3. <skill_dir>/config.toml (fallback — bundled defaults)
+  1. <temp_dir>/config.toml for a directory passed on the command line
+  2. <cwd>/<book>_temp/config.toml (sorted — stable with several books)
+  3. <cwd>/config.toml
+  4. <skill_dir>/config.toml (fallback — bundled defaults)
 
 Usage in other scripts:
     from config import load_config
@@ -276,9 +277,11 @@ DEFAULTS = {
         "ratio_min": 0.5,
         "ratio_max": 2.0,
         "max_heading_delta": 2,
+        "median_tolerance": 0.25,
+        "max_para_delta_ratio": 0.1,
     },
     "parallelism": {
-        "batch_size": 8,
+        "batch_size": 6,
     },
 }
 
@@ -286,27 +289,43 @@ DEFAULTS = {
 def _find_config_toml() -> Path | None:
     """Find config.toml in standard locations.
 
-    Search order:
-      1. <cwd>/config.toml
-      2. Any <cwd>/*_temp/config.toml
-      3. <skill_dir>/config.toml (this file's parent)
+    Search order (first match wins):
+      1. <temp_dir>/config.toml for a directory passed on the command line
+         (the book's own config — always the most specific)
+      2. <cwd>/*_temp/config.toml (sorted, so several books pick a stable one)
+      3. <cwd>/config.toml
+      4. <skill_dir>/config.toml (bundled defaults)
+
+    Step 3 is deliberately below steps 1-2: a stray config.toml in the
+    working directory must not shadow a book's own config.
 
     Returns the first match, or None.
     """
     cwd = Path.cwd()
 
-    # 1. cwd/config.toml
-    candidate = cwd / "config.toml"
-    if candidate.exists():
-        return candidate
+    # 1. A temp dir passed on the command line (most specific).
+    for arg in sys.argv[1:]:
+        if arg.startswith("-"):
+            continue
+        candidate = Path(arg)
+        try:
+            if candidate.is_dir() and (candidate / "config.toml").exists():
+                return candidate / "config.toml"
+        except OSError:
+            continue
 
-    # 2. cwd/*_temp/config.toml
-    for temp_dir in cwd.glob("*_temp"):
+    # 2. <cwd>/*_temp/config.toml — sorted for determinism.
+    for temp_dir in sorted(cwd.glob("*_temp")):
         candidate = temp_dir / "config.toml"
         if candidate.exists():
             return candidate
 
-    # 3. skill_dir/config.toml (bundled defaults)
+    # 3. cwd/config.toml
+    candidate = cwd / "config.toml"
+    if candidate.exists():
+        return candidate
+
+    # 4. skill_dir/config.toml (bundled defaults)
     skill_dir = Path(__file__).resolve().parent.parent  # scripts/ -> skill root
     candidate = skill_dir / "config.toml"
     if candidate.exists():

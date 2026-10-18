@@ -10,8 +10,8 @@ others rejected), the glossary is left in an inconsistent state and the
 next batch of sub-agents sees a mix of old/new term mappings.
 
 Usage:
-    python3 merge_meta.py prepare-merge <temp_dir>
-        Reads all unconsumed `output_chunk*.meta.json` files and prints
+    python3 merge_meta.py prepare-merge <temp_dir> [--out plan.json]
+        Reads all unconsumed `output_chunk*.meta.json` files and produces
         JSON with:
           - auto_apply: list of items that can be applied without
             human/agent decision (no collision, unanimous across chunks)
@@ -21,33 +21,42 @@ Usage:
             recorded in applied_meta_hashes on successful apply-merge)
           - malformed_meta_chunk_ids: meta files that failed validation
             (quarantined — not consumed, not crashing the run)
+        With --out the plan is written to that file; otherwise it is
+        printed to stdout.
+
+    python3 merge_meta.py apply-merge <temp_dir> --plan plan.json --decisions d.json
+        Preferred flow (no stdin, Windows-safe). `plan.json` is the file
+        written by `prepare-merge --out`; `d.json` is a list of
+        {"id": ..., "choice": ...} pairs, OR {"decisions": [...]}. The
+        script pulls variants/kind from plan.json by id — the orchestrator
+        writes only id:choice pairs.
+        Atomic apply. If ANY decision is malformed (wrong choice for kind,
+        missing fields, references non-existent entity), the entire batch
+        aborts with non-zero exit and NO glossary mutation, NO hash
+        recording.
 
     echo '<JSON>' | python3 merge_meta.py apply-merge <temp_dir>
-        Atomic apply. Reads JSON from stdin with shape:
-          { "auto_apply": [...], "decisions": [...],
-            "consumed_chunk_ids": [...] }
-        If ANY decision is malformed (wrong choice for kind, missing
-        fields, references non-existent entity), the entire batch aborts
-        with non-zero exit and NO glossary mutation, NO hash recording.
-        On success: glossary.json is updated (via .tmp + rename),
-        consumed meta hashes are recorded in applied_meta_hashes.
+        Legacy stdin flow: reads { "auto_apply": [...], "decisions": [...],
+        "consumed_chunk_ids": [...] }. Kept for compatibility; prefer the
+        --plan/--decisions flow above.
 
     python3 merge_meta.py status <temp_dir>
         Observability snapshot: counts of meta files found / consumed /
         malformed, and unmerged (sub-agent-compliance) chunks.
 """
 
+import argparse
 import json
 import re
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "shared"))
-from common import make_term_id, process_dir, stable_hash
+from common import chunk_output_files, make_term_id, process_dir, stable_hash
+from config import atomic_write_text, read_json_safe
 from glossary_io import GlossaryError, load_glossary, save_glossary
 
 # Helpers
-# ─────────────────────────────────────────────────────────────────────
 
 
 def _die(message: str) -> None:
@@ -83,9 +92,8 @@ def save_glossary_atomic(temp_dir: Path, glossary: dict):
         _die(f"Мерж остановлен: {e}")
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Meta file validation
-# ─────────────────────────────────────────────────────────────────────
+
 
 ASCII_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z\s'\-]*$")
 
@@ -148,9 +156,7 @@ def validate_meta(meta: dict) -> tuple[bool, list[str]]:
     return (len(errors) == 0), errors
 
 
-# ─────────────────────────────────────────────────────────────────────
 # prepare-merge
-# ─────────────────────────────────────────────────────────────────────
 
 
 def find_existing_term(glossary: dict, source: str) -> dict | None:
@@ -274,7 +280,7 @@ def prepare_merge(temp_dir: Path) -> dict:
                     "entity_source": src,
                     "current_target": existing["target"],
                     "current_category": existing.get("category", ""),
-                    "proposed_variants": [
+                    "variants": [
                         {
                             "target_proposal": p["target_proposal"],
                             "category": p["category"],
@@ -443,9 +449,8 @@ def prepare_merge(temp_dir: Path) -> dict:
     }
 
 
-# ─────────────────────────────────────────────────────────────────────
 # apply-merge (transactional)
-# ─────────────────────────────────────────────────────────────────────
+
 
 VALID_CHOICE_FOR_KIND = {
     "alias": {"yes_alias", "no_separate_entity", "skip"},
@@ -478,15 +483,10 @@ def validate_decisions(decisions: list, prepared: dict) -> list[str]:
             valid = set(p.get("options", []))
         if choice not in valid:
             errors.append(f"decision {did!r}: choice {choice!r} not valid for kind {kind!r}; valid: {sorted(valid)}")
-        # Round-trip check: decision must include original kind (and variants for
-        # conflicting_new_entity_proposals)
-        if d.get("kind") != kind:
+        # kind is optional in a decision payload (taken from the prepared
+        # plan), but when present it must match.
+        if d.get("kind") not in (None, kind):
             errors.append(f"decision {did!r}: kind mismatch ({d.get('kind')!r} vs {kind!r})")
-        if kind == "conflicting_new_entity_proposals":
-            if "variants" not in d:
-                errors.append(
-                    f"decision {did!r}: conflicting_new_entity_proposals requires 'variants' array in decision payload"
-                )
     return errors
 
 
@@ -617,11 +617,11 @@ def apply_merge(temp_dir: Path, payload: dict):
                     term["notes"] += " | "
                 term["notes"] += (
                     f"conflict on target: kept {p['current_target']!r}, "
-                    f"proposals: {[v['target_proposal'] for v in p['proposed_variants']]}"
+                    f"proposals: {[v['target_proposal'] for v in p['variants']]}"
                 )
             elif choice.startswith("use_variant_"):
                 idx = int(choice.split("_")[-1])
-                variant = p["proposed_variants"][idx]
+                variant = p["variants"][idx]
                 old_target = term.get("target")
                 old_category = term.get("category")
                 term["target"] = variant["target_proposal"]
@@ -711,9 +711,48 @@ def apply_merge(temp_dir: Path, payload: dict):
     )
 
 
-# ─────────────────────────────────────────────────────────────────────
+def apply_merge_files(temp_dir: Path, plan_path: Path, decisions_path: Path):
+    """Apply a prepared plan + a decisions file (the preferred CLI flow).
+
+    `decisions_path` holds either a list of {"id", "choice"} pairs or
+    {"decisions": [...]}. Variants and kind are pulled from plan.json by
+    id, so the orchestrator never has to copy them by hand.
+    """
+    try:
+        plan = read_json_safe(plan_path)
+    except (json.JSONDecodeError, OSError) as e:
+        _die(f"cannot read plan {plan_path}: {e}")
+    try:
+        raw = read_json_safe(decisions_path)
+    except (json.JSONDecodeError, OSError) as e:
+        _die(f"cannot read decisions {decisions_path}: {e}")
+
+    if isinstance(raw, dict):
+        decisions_in = raw.get("decisions", [])
+    elif isinstance(raw, list):
+        decisions_in = raw
+    else:
+        _die(f"decisions {decisions_path} must be a list or an object with 'decisions'")
+
+    prepared_by_id = {d["id"]: d for d in plan.get("decisions_needed", [])}
+    decisions = []
+    for d in decisions_in:
+        did = d.get("id")
+        item = {"id": did, "choice": d.get("choice")}
+        p = prepared_by_id.get(did)
+        if p:
+            item["kind"] = p["kind"]
+        decisions.append(item)
+
+    payload = {
+        "auto_apply": plan.get("auto_apply", []),
+        "decisions": decisions,
+        "consumed_chunk_ids": plan.get("consumed_chunk_ids", []),
+    }
+    apply_merge(temp_dir, payload)
+
+
 # status
-# ─────────────────────────────────────────────────────────────────────
 
 
 def status(temp_dir: Path):
@@ -721,7 +760,7 @@ def status(temp_dir: Path):
     applied_hashes = glossary.get("applied_meta_hashes", {})
 
     meta_files = sorted(process_dir(temp_dir).glob("output_chunk*.meta.json"))
-    output_files = sorted(process_dir(temp_dir).glob("output_chunk*.md"))
+    output_files = chunk_output_files(process_dir(temp_dir))
 
     consumed = 0
     unmerged = 0
@@ -780,48 +819,66 @@ def status(temp_dir: Path):
             print(f"  - {s}")
 
 
-# ─────────────────────────────────────────────────────────────────────
 # CLI
-# ─────────────────────────────────────────────────────────────────────
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="merge_meta.py",
+        description="Transaction-safe merge of sub-agent meta into glossary.json.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_prepare = sub.add_parser("prepare-merge", help="build a merge plan from unconsumed metas")
+    p_prepare.add_argument("temp_dir")
+    p_prepare.add_argument("--out", metavar="PLAN.json", help="write the plan here (default: stdout)")
+
+    p_apply = sub.add_parser("apply-merge", help="apply a merge plan transactionally")
+    p_apply.add_argument("temp_dir")
+    p_apply.add_argument("--plan", metavar="PLAN.json", help="plan from prepare-merge --out")
+    p_apply.add_argument("--decisions", metavar="D.json", help="list of {id, choice} pairs")
+
+    p_status = sub.add_parser("status", help="observability snapshot")
+    p_status.add_argument("temp_dir")
+
+    return parser
 
 
 def main():
-    if len(sys.argv) < 2:
-        print(__doc__)
-        sys.exit(1)
+    args = build_parser().parse_args()
 
-    cmd = sys.argv[1]
+    if args.command == "prepare-merge":
+        result = prepare_merge(Path(args.temp_dir))
+        text = json.dumps(result, ensure_ascii=False, indent=2)
+        if args.out:
+            atomic_write_text(Path(args.out), text)
+            print(
+                f"Merge plan written: {args.out} "
+                f"(auto_apply={len(result['auto_apply'])}, "
+                f"decisions_needed={len(result['decisions_needed'])}, "
+                f"consumed={len(result['consumed_chunk_ids'])})"
+            )
+        else:
+            print(text)
 
-    if cmd == "prepare-merge":
-        if len(sys.argv) < 3:
-            print("Usage: merge_meta.py prepare-merge <temp_dir>")
+    elif args.command == "apply-merge":
+        temp_dir = Path(args.temp_dir)
+        if args.plan and args.decisions:
+            apply_merge_files(temp_dir, Path(args.plan), Path(args.decisions))
+        elif args.plan or args.decisions:
+            print("ERROR: --plan and --decisions must be used together", file=sys.stderr)
             sys.exit(1)
-        result = prepare_merge(Path(sys.argv[2]))
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            payload_text = sys.stdin.read()
+            try:
+                payload = json.loads(payload_text)
+            except json.JSONDecodeError as e:
+                print(f"ERROR: invalid JSON on stdin: {e}", file=sys.stderr)
+                sys.exit(1)
+            apply_merge(temp_dir, payload)
 
-    elif cmd == "apply-merge":
-        if len(sys.argv) < 3:
-            print("Usage: echo '<json>' | merge_meta.py apply-merge <temp_dir>")
-            sys.exit(1)
-        temp_dir = Path(sys.argv[2])
-        payload_text = sys.stdin.read()
-        try:
-            payload = json.loads(payload_text)
-        except json.JSONDecodeError as e:
-            print(f"ERROR: invalid JSON on stdin: {e}", file=sys.stderr)
-            sys.exit(1)
-        apply_merge(temp_dir, payload)
-
-    elif cmd == "status":
-        if len(sys.argv) < 3:
-            print("Usage: merge_meta.py status <temp_dir>")
-            sys.exit(1)
-        status(Path(sys.argv[2]))
-
-    else:
-        print(f"Unknown command: {cmd}", file=sys.stderr)
-        print(__doc__)
-        sys.exit(1)
+    elif args.command == "status":
+        status(Path(args.temp_dir))
 
 
 if __name__ == "__main__":
